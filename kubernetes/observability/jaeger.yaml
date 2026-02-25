@@ -1,0 +1,97 @@
+# kubernetes/observability/jaeger.yaml
+# Jaeger all-in-one — for demo/dev use only.
+# For production, use the Jaeger Operator or a distributed deployment.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: observability
+  labels:
+    app: jaeger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jaeger
+  template:
+    metadata:
+      labels:
+        app: jaeger
+      annotations:
+        consul.hashicorp.com/connect-inject: "false"
+    spec:
+      containers:
+        - name: jaeger
+          image: jaegertracing/all-in-one:1.58
+          env:
+            - name: COLLECTOR_OTLP_ENABLED
+              value: "true"
+            - name: SPAN_STORAGE_TYPE
+              value: badger
+            - name: BADGER_EPHEMERAL
+              value: "false"
+            - name: BADGER_DIRECTORY_VALUE
+              value: /badger/data
+            - name: BADGER_DIRECTORY_KEY
+              value: /badger/key
+          ports:
+            - containerPort: 16686  # UI
+              name: ui
+            - containerPort: 4317   # OTLP gRPC
+              name: otlp-grpc
+            - containerPort: 9411   # Zipkin
+              name: zipkin
+            - containerPort: 14268  # HTTP collector
+              name: http-collector
+          volumeMounts:
+            - name: badger-storage
+              mountPath: /badger
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+      volumes:
+        - name: badger-storage
+          emptyDir: {}   # Use PVC for persistence in production
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-collector
+  namespace: observability
+  labels:
+    app: jaeger
+spec:
+  selector:
+    app: jaeger
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: zipkin
+      port: 9411
+      targetPort: 9411
+    - name: http-collector
+      port: 14268
+      targetPort: 14268
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger-query
+  namespace: observability
+  labels:
+    app: jaeger
+spec:
+  selector:
+    app: jaeger
+  ports:
+    - name: ui
+      port: 16686
+      targetPort: 16686
+  type: ClusterIP

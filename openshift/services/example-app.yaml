@@ -1,0 +1,19 @@
+# openshift/services/example-app.yaml
+# Same as kubernetes/services/example-app.yaml but with an OCP Route.
+# The Deployment/Service are identical — apply the k8s manifest first,
+# then apply this file for the Route.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: example-app
+  namespace: demo
+spec:
+  to:
+    kind: Service
+    name: example-app
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

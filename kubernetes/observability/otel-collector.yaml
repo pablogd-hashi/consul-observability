@@ -1,0 +1,285 @@
+# kubernetes/observability/otel-collector.yaml
+# OpenTelemetry Collector — receives traces/logs from apps and Envoy sidecars,
+# forwards to Jaeger (traces) and Loki (logs).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector
+  namespace: observability
+---
+# RBAC so the k8sattributes processor can look up pod metadata
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces", "nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: observability
+data:
+  config.yml: |
+    # Sourced from: shared/otel/otel-collector-k8s.yml
+    # See that file for full inline comments.
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+      zipkin:
+        endpoint: "0.0.0.0:9411"
+
+      # Prometheus receiver — scrapes Consul agent and Envoy sidecar metrics.
+      # Re-exposes them via the prometheus exporter on port 8889 for Prometheus to scrape.
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: consul-agents
+              scrape_interval: 15s
+              scrape_timeout: 10s
+              metrics_path: /v1/agent/metrics
+              params:
+                format: [prometheus]
+              # ACLs are enabled — authenticate with the bootstrap token stored in a Secret.
+              # In production, create a dedicated metrics policy token instead.
+              authorization:
+                type: Bearer
+                credentials_file: /etc/consul-token/token
+              static_configs:
+                - targets: ["consul-server.consul.svc.cluster.local:8500"]
+
+            - job_name: envoy-sidecars
+              scrape_interval: 15s
+              scrape_timeout: 10s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces:
+                    names: [default]   # HashiCups runs in default namespace
+              relabel_configs:
+                # Only keep pods opted in to scraping
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+                  regex: "true"
+                  action: keep
+                # Use the path from the annotation (/metrics for merged endpoint)
+                - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+                  regex: (.+)
+                  target_label: __metrics_path__
+                # Rewrite address to pod_ip:annotated_port (use $$ to escape $ in OTel config)
+                - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+                  regex: "([^:]+)(?::\\d+)?;(\\d+)"
+                  replacement: "$$1:$$2"
+                  target_label: __address__
+                - source_labels: [__meta_kubernetes_namespace]
+                  target_label: namespace
+                - source_labels: [__meta_kubernetes_pod_name]
+                  target_label: pod
+                - source_labels: [__meta_kubernetes_pod_label_app]
+                  target_label: service
+
+    processors:
+      memory_limiter:
+        check_interval: 5s
+        limit_mib: 512
+        spike_limit_mib: 128
+      batch:
+        timeout: 5s
+        send_batch_size: 1000
+      k8sattributes:
+        auth_type: serviceAccount
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.node.name
+            - k8s.deployment.name
+          labels:
+            - tag_name: app
+              key: app
+              from: pod
+            - tag_name: version
+              key: version
+              from: pod
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.ip
+          - sources:
+              - from: connection
+      attributes/mesh:
+        actions:
+          - key: mesh
+            value: consul
+            action: insert
+          - key: environment
+            value: kubernetes
+            action: insert
+      attributes/envoy:
+        actions:
+          - key: telemetry.source
+            value: envoy-proxy
+            action: insert
+      # Promote k8s resource attributes to Loki stream labels so LogQL queries like
+      # {namespace="default", app="nginx"} work. The loki exporter reads the
+      # loki.resource.labels hint attribute to know which resource attrs become labels.
+      resource/loki_labels:
+        attributes:
+          - action: insert
+            key: loki.resource.labels
+            value: "k8s.namespace.name, k8s.pod.name, app, k8s.deployment.name"
+
+    exporters:
+      otlp/jaeger:
+        endpoint: jaeger-collector.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
+      loki:
+        endpoint: http://loki.observability.svc.cluster.local:3100/loki/api/v1/push
+        default_labels_enabled:
+          exporter: false
+          level: true
+      # Expose scraped Consul + Envoy metrics as a Prometheus scrape endpoint on :8889
+      prometheus:
+        endpoint: "0.0.0.0:8889"
+        namespace: otelcol
+      debug:
+        verbosity: normal
+
+    service:
+      telemetry:
+        metrics:
+          address: "0.0.0.0:8888"
+      pipelines:
+        traces/app:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, attributes/mesh, batch]
+          exporters: [otlp/jaeger]
+        traces/proxy:
+          receivers: [zipkin]
+          processors: [memory_limiter, k8sattributes, attributes/mesh, attributes/envoy, batch]
+          exporters: [otlp/jaeger]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, k8sattributes, resource/loki_labels, batch]
+          exporters: [loki, debug]
+        # Scrape Consul + Envoy metrics and re-expose for Prometheus
+        metrics:
+          receivers: [prometheus]
+          processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheus]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+      annotations:
+        consul.hashicorp.com/connect-inject: "false"
+    spec:
+      serviceAccountName: otel-collector
+      containers:
+        - name: otel-collector
+          image: otel/opentelemetry-collector-contrib:0.103.0
+          args: ["--config=/etc/otel/config.yml"]
+          ports:
+            - containerPort: 4317   # OTLP gRPC
+              name: otlp-grpc
+            - containerPort: 4318   # OTLP HTTP
+              name: otlp-http
+            - containerPort: 9411   # Zipkin
+              name: zipkin
+            - containerPort: 8888   # Self-metrics (collector internals)
+              name: metrics
+            - containerPort: 8889   # Prometheus exporter (scraped Consul + Envoy metrics)
+              name: prom-exporter
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+            - name: consul-token
+              mountPath: /etc/consul-token
+              readOnly: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: otel-collector-config
+        - name: consul-token
+          secret:
+            secretName: consul-bootstrap-acl-token
+            items:
+              - key: token
+                path: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: observability
+  labels:
+    app: otel-collector
+spec:
+  selector:
+    app: otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: zipkin
+      port: 9411
+      targetPort: 9411
+    - name: metrics
+      port: 8888
+      targetPort: 8888
+    - name: prom-exporter
+      port: 8889
+      targetPort: 8889
+  type: ClusterIP

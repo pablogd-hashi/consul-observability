@@ -1,0 +1,5 @@
+# Local Claude config
+.claude/
+
+# Environment variables
+.env

@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgenerator
+  namespace: default
+  labels:
+    app: loadgenerator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgenerator
+  template:
+    metadata:
+      labels:
+        app: loadgenerator
+      annotations:
+        # Not part of the mesh — calls web from outside
+        consul.hashicorp.com/connect-inject: "false"
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: loadgenerator
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for web service..."
+              sleep 30
+              while true; do
+                curl -sf http://web:9090/ > /dev/null
+                curl -sf http://web:9090/ > /dev/null
+                curl -sf http://web:9090/ > /dev/null
+                sleep 2
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

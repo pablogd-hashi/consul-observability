@@ -1,0 +1,110 @@
+# kubernetes/consul/values.yaml
+# Consul Helm chart values for Kubernetes (minikube / kind / EKS / GKE).
+# Install: helm install consul hashicorp/consul -n consul --create-namespace -f values.yaml
+#
+# For OpenShift, see: ../../openshift/consul/values.yaml (extends this file)
+
+global:
+  name: consul
+  datacenter: dc1
+  image: "hashicorp/consul:1.22.3"
+  imageEnvoy: "envoyproxy/envoy:v1.32.2"
+
+  # ── TLS ──────────────────────────────────────────────────────────────────
+  tls:
+    enabled: true
+    verify: true
+    enableAutoEncrypt: true   # Automatically distributes certs to client agents
+    httpsOnly: false          # Keep HTTP on :8500 so Prometheus can scrape /v1/agent/metrics
+
+  # ── ACLs ─────────────────────────────────────────────────────────────────
+  # After enabling, run: kubectl exec -n consul consul-server-0 -- consul acl bootstrap
+  # Store the bootstrap token in a Secret and set CONSUL_HTTP_TOKEN in your environment.
+  acls:
+    manageSystemACLs: true
+
+  # ── Metrics ──────────────────────────────────────────────────────────────
+  # Exposes Consul agent and Envoy proxy metrics to Prometheus.
+  metrics:
+    enabled: true
+    enableAgentMetrics: true
+    agentMetricsRetentionTime: "1m"
+
+  # ── Gossip encryption ─────────────────────────────────────────────────────
+  # Generate key: consul keygen  (or: openssl rand -base64 32)
+  # Create secret: kubectl create secret generic consul-gossip-key \
+  #   --from-literal=key="<output>" -n consul
+  gossipEncryption:
+    secretName: consul-gossip-key
+    secretKey: key
+
+server:
+  enabled: true
+  replicas: 1              # 3 for production
+  bootstrapExpect: 1       # must equal replicas
+  storage: 10Gi
+  storageClass: ""         # use cluster default
+
+  # Extra component-level logging for demos
+  extraConfig: |
+    {
+      "log_level": "INFO",
+      "telemetry": {
+        "prometheus_retention_time": "60s"
+      }
+    }
+
+  # Expose server UI and metrics
+  service:
+    type: ClusterIP
+
+client:
+  enabled: true
+  grpc: true
+
+# ── Connect Injection ───────────────────────────────────────────────────────
+connectInject:
+  enabled: true
+  default: false     # opt-in via annotation: consul.hashicorp.com/connect-inject: "true"
+
+  # Envoy proxy metrics served at :20200/metrics via envoy_prometheus_bind_addr in ProxyDefaults.
+  # defaultEnableMerging is intentionally FALSE: HashiCups services do not expose a /metrics
+  # endpoint, so merging causes consul-dataplane to embed error text in the metrics output,
+  # breaking Prometheus parsing ("failed to scrape metrics at url...").
+  # Pure Envoy stats are still fully available via envoy_prometheus_bind_addr: 0.0.0.0:20200.
+  metrics:
+    defaultEnabled: true
+    defaultEnableMerging: false
+    defaultMergedMetricsPort: 20100
+    defaultPrometheusScrapePort: 20200
+    defaultPrometheusScrapePath: "/metrics"
+
+  # Transparent proxy — disabled for simplicity; using explicit upstream annotations
+  transparentProxy:
+    defaultEnabled: false
+
+# ── CRD Controller ──────────────────────────────────────────────────────────
+# Required to apply ProxyDefaults, ServiceDefaults etc. as CRDs
+controller:
+  enabled: true
+
+# ── Consul UI ───────────────────────────────────────────────────────────────
+ui:
+  enabled: true
+  service:
+    type: ClusterIP   # Use NodePort or LoadBalancer for external access
+  ingress:
+    enabled: false    # Set true and configure host for production
+  metrics:
+    enabled: true
+    provider: "prometheus"
+    baseURL: http://prometheus.observability.svc.cluster.local:9090
+
+# ── DNS ──────────────────────────────────────────────────────────────────────
+dns:
+  enabled: true
+  enableRedirection: true
+
+# ── Sync catalog ─────────────────────────────────────────────────────────────
+syncCatalog:
+  enabled: false   # Enable to sync k8s services to Consul catalog

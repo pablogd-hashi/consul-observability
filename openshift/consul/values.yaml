@@ -1,0 +1,44 @@
+# openshift/consul/values.yaml
+# OpenShift-specific Consul Helm overrides.
+# Extends kubernetes/consul/values.yaml — install with both files:
+#
+#   helm install consul hashicorp/consul -n consul --create-namespace \
+#     -f kubernetes/consul/values.yaml \
+#     -f openshift/consul/values.yaml
+
+global:
+  # OpenShift requires this flag to configure appropriate SCCs and security contexts
+  openshift:
+    enabled: true
+
+  # OCP image pull policy
+  imagePullPolicy: IfNotPresent
+
+  tls:
+    enabled: true
+    verify: false
+
+server:
+  # OCP: run as non-root, no privileged containers required with openshift.enabled
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 100
+    fsGroup: 1000
+
+  # OCP storage class — adjust to match your cluster's default
+  storageClass: "gp2"   # AWS; use "standard" for on-prem or "managed-csi" for Azure
+
+connectInject:
+  # OCP requires explicit SCC — Consul Helm handles this when openshift.enabled=true
+  # No additional security context needed here.
+
+  # OCP-compatible metrics merging (same as k8s)
+  metrics:
+    defaultEnableMerging: true
+
+ui:
+  service:
+    type: ClusterIP   # Expose via Route below, not LoadBalancer
+
+  # OpenShift Route for the Consul UI
+  # Apply separately: oc apply -f openshift/consul/route.yaml

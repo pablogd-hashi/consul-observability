@@ -1,0 +1,68 @@
+# kubernetes/consul/config-entries/proxy-defaults.yaml
+# Global Envoy proxy configuration applied to ALL sidecars in the mesh.
+# Mirrors the HCL config in: shared/consul/proxy-defaults.hcl
+#
+# Apply: kubectl apply -f proxy-defaults.yaml -n consul
+# Or:    consul config write proxy-defaults.yaml  (if using Consul CLI)
+
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ProxyDefaults
+metadata:
+  name: global
+  namespace: consul
+spec:
+  # ── Prometheus metrics ──────────────────────────────────────────────────
+  # Expose Envoy stats on port 20200 for Prometheus scraping.
+  # connectInject.metrics.defaultEnableMerging=true in Helm values merges
+  # these with app metrics automatically.
+  config:
+    envoy_prometheus_bind_addr: "0.0.0.0:20200"
+
+    # ── Envoy tracing (Zipkin → OTel Collector → Jaeger) ─────────────────
+    # shared_span_context=true propagates W3C traceparent across services.
+    envoy_tracing_json: |
+      {
+        "http": {
+          "name": "envoy.tracers.zipkin",
+          "typedConfig": {
+            "@type": "type.googleapis.com/envoy.config.trace.v3.ZipkinConfig",
+            "collector_cluster": "otel_zipkin",
+            "collector_endpoint_version": "HTTP_JSON",
+            "collector_endpoint": "/api/v2/spans",
+            "shared_span_context": true
+          }
+        }
+      }
+
+    # Static cluster pointing to the OTel Collector Zipkin receiver.
+    # The address should match the OTel Collector Service DNS name in k8s.
+    envoy_extra_static_clusters_json: |
+      {
+        "name": "otel_zipkin",
+        "type": "STRICT_DNS",
+        "connect_timeout": "5s",
+        "load_assignment": {
+          "cluster_name": "otel_zipkin",
+          "endpoints": [{
+            "lb_endpoints": [{
+              "endpoint": {
+                "address": {
+                  "socket_address": {
+                    "address": "otel-collector.observability.svc.cluster.local",
+                    "port_value": 9411
+                  }
+                }
+              }
+            }]
+          }]
+        }
+      }
+
+  # ── Envoy access logs ────────────────────────────────────────────────────
+  # Enables access logging to stdout in the sidecar container.
+  # jsonFormat requires a JSON string value in this CRD version — use the
+  # text format here; structured JSON logging can be configured via Envoy
+  # bootstrap overrides if needed.
+  accessLogs:
+    enabled: true
+    type: stdout

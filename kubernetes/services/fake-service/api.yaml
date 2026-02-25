@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: api
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+      annotations:
+        consul.hashicorp.com/connect-inject: "true"
+        consul.hashicorp.com/transparent-proxy: "true"
+        consul.hashicorp.com/transparent-proxy-overwrite-probes: "true"
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "20200"
+        prometheus.io/path: "/stats/prometheus"
+    spec:
+      serviceAccountName: api
+      containers:
+        - name: api
+          image: nicholasjackson/fake-service:v0.26.2
+          ports:
+            - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          env:
+            - name: NAME
+              value: "api"
+            - name: MESSAGE
+              value: "API response"
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:9090"
+            - name: UPSTREAM_URIS
+              value: "http://payments:9090,http://cache:9090"
+            - name: UPSTREAM_WORKERS
+              value: "2"
+            - name: TRACING_ZIPKIN
+              value: "http://otel-collector.observability.svc.cluster.local:9411"
+            - name: LOG_FORMAT
+              value: "json"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: default
+spec:
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090

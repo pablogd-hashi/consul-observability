@@ -1,0 +1,104 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  zipkin:
+    endpoint: "0.0.0.0:9411"
+
+  filelog:
+    include:
+      - /var/log/envoy/access.log
+    start_at: beginning
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.start_time
+          layout_type: gotime
+          layout: "2006-01-02T15:04:05.999Z"
+      - type: move
+        from: attributes.method
+        to: attributes["http.method"]
+      - type: move
+        from: attributes.path
+        to: attributes["http.target"]
+      - type: move
+        from: attributes.response_code
+        to: attributes["http.status_code"]
+      - type: move
+        from: attributes.duration
+        to: attributes["http.duration_ms"]
+      - type: move
+        from: attributes.upstream_host
+        to: attributes["net.peer.name"]
+    resource:
+      service.name: envoy-sidecar
+      log.source: access-log
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  # Enrich every span/log with mesh-level attributes for node graph edges
+  attributes/mesh:
+    actions:
+      - key: mesh
+        value: consul
+        action: insert
+      - key: datacenter
+        value: dc1
+        action: insert
+
+  # Tag Zipkin spans (from Envoy) with proxy source so they're distinguishable
+  attributes/envoy:
+    actions:
+      - key: telemetry.source
+        value: envoy-proxy
+        action: insert
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: true
+      level: true
+
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    metrics:
+      address: "0.0.0.0:8888"
+
+  pipelines:
+    # App traces (OTLP from example-app and backend-api)
+    traces/app:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/mesh, batch]
+      exporters: [otlp/jaeger]
+
+    # Proxy traces (Zipkin from Envoy sidecar)
+    traces/proxy:
+      receivers: [zipkin]
+      processors: [memory_limiter, attributes/mesh, attributes/envoy, batch]
+      exporters: [otlp/jaeger]
+
+    logs:
+      receivers: [otlp, filelog]
+      processors: [memory_limiter, batch]
+      exporters: [loki, debug]

@@ -1,0 +1,305 @@
+networks:
+  consul-mesh:
+    driver: bridge
+
+volumes:
+  loki-data:
+  grafana-data:
+  prometheus-data:
+  jaeger-data:
+  envoy-logs:
+
+services:
+
+  # ─── Consul ───────────────────────────────────────────────────────────────
+  consul:
+    image: hashicorp/consul:1.22.3
+    container_name: consul
+    restart: unless-stopped
+    ports:
+      - "8500:8500"   # HTTP API / UI
+      - "8600:8600/udp" # DNS
+    volumes:
+      - ./consul/consul.hcl:/consul/config/consul.hcl:ro
+    command: ["agent", "-config-file=/consul/config/consul.hcl"]
+    networks:
+      - consul-mesh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8500/v1/status/leader"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── fake-service topology ────────────────────────────────────────────────
+  # Topology: web → api → [payments, cache]  where  payments → currency
+  # All services send Zipkin traces to otel-collector → Jaeger
+
+  currency:
+    image: nicholasjackson/fake-service:v0.26.2
+    container_name: currency
+    restart: unless-stopped
+    environment:
+      - NAME=currency
+      - MESSAGE=Currency response
+      - LISTEN_ADDR=0.0.0.0:9090
+      - TRACING_ZIPKIN=http://otel-collector:9411
+      - LOG_FORMAT=json
+    networks:
+      - consul-mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  cache:
+    image: nicholasjackson/fake-service:v0.26.2
+    container_name: cache
+    restart: unless-stopped
+    environment:
+      - NAME=cache
+      - MESSAGE=Cache response
+      - LISTEN_ADDR=0.0.0.0:9090
+      - TRACING_ZIPKIN=http://otel-collector:9411
+      - LOG_FORMAT=json
+    networks:
+      - consul-mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  payments:
+    image: nicholasjackson/fake-service:v0.26.2
+    container_name: payments
+    restart: unless-stopped
+    environment:
+      - NAME=payments
+      - MESSAGE=Payments response
+      - LISTEN_ADDR=0.0.0.0:9090
+      - UPSTREAM_URIS=http://currency:9090
+      - TRACING_ZIPKIN=http://otel-collector:9411
+      - LOG_FORMAT=json
+    networks:
+      - consul-mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      currency:
+        condition: service_started
+
+  api:
+    image: nicholasjackson/fake-service:v0.26.2
+    container_name: api
+    restart: unless-stopped
+    environment:
+      - NAME=api
+      - MESSAGE=API response
+      - LISTEN_ADDR=0.0.0.0:9090
+      - UPSTREAM_URIS=http://payments:9090,http://cache:9090
+      - UPSTREAM_WORKERS=2
+      - TRACING_ZIPKIN=http://otel-collector:9411
+      - LOG_FORMAT=json
+    networks:
+      - consul-mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      payments:
+        condition: service_started
+      cache:
+        condition: service_started
+
+  web:
+    image: nicholasjackson/fake-service:v0.26.2
+    container_name: web
+    restart: unless-stopped
+    environment:
+      - NAME=web
+      - MESSAGE=Hello from web
+      - LISTEN_ADDR=0.0.0.0:9090
+      - UPSTREAM_URIS=http://api:9090
+      - TRACING_ZIPKIN=http://otel-collector:9411
+      - LOG_FORMAT=json
+    networks:
+      - consul-mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+      api:
+        condition: service_started
+
+  # ─── Envoy proxy (public entry point → web:9090) ──────────────────────────
+  # Provides Prometheus metrics (:20200/stats/prometheus) and JSON access logs
+  # forwarded by OTel filelog receiver → Loki
+  #
+  # NOTE: envoyproxy/envoy's docker-entrypoint.sh drops from root → envoy (UID 101)
+  # via gosu even when `user: root` is set, so the named volume owned by root:root 755
+  # becomes unwritable. We override the entrypoint entirely so the shell (and envoy)
+  # run as root, bypassing gosu entirely.
+  envoy:
+    image: envoyproxy/envoy:v1.32.2
+    container_name: envoy
+    restart: unless-stopped
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mkdir -p /var/log/envoy && exec envoy -c /etc/envoy/envoy-access-log.json --service-cluster web --service-node web-proxy -l info"
+    depends_on:
+      web:
+        condition: service_started
+    volumes:
+      - ./envoy/envoy-access-log.json:/etc/envoy/envoy-access-log.json:ro
+      - envoy-logs:/var/log/envoy
+    ports:
+      - "20200:20200"  # Envoy admin / metrics (Prometheus scrapes this)
+      - "21000:21000"  # Inbound listener — send traffic here to enter the mesh
+    networks:
+      - consul-mesh
+    healthcheck:
+      # envoyproxy/envoy has no curl/wget — use bash /dev/tcp + HTTP/1.1 to check /ready
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/20200 && printf \"GET /ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && timeout 2 cat <&3 | grep -q LIVE'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ─── Prometheus ───────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    networks:
+      - consul-mesh
+    depends_on:
+      consul:
+        condition: service_healthy
+
+  # ─── Loki ─────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: loki
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    networks:
+      - consul-mesh
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  # ─── OpenTelemetry Collector ───────────────────────────────────────────────
+  # Receives: Zipkin traces (from fake-service + Envoy), filelog (Envoy access logs)
+  # Exports: traces → Jaeger, logs → Loki
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.103.0
+    container_name: otel-collector
+    restart: unless-stopped
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "9411:9411"   # Zipkin (from fake-service + Envoy)
+      - "8888:8888"   # OTel self-metrics
+    volumes:
+      - ./otel/otel-collector.yml:/etc/otel/config.yml:ro
+      - envoy-logs:/var/log/envoy
+    command: ["--config=/etc/otel/config.yml"]
+    networks:
+      - consul-mesh
+    depends_on:
+      loki:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  # ─── Jaeger ───────────────────────────────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    container_name: jaeger
+    restart: unless-stopped
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "14250:14250"  # gRPC (OTLP from collector)
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    volumes:
+      - jaeger-data:/badger
+    networks:
+      - consul-mesh
+
+  # ─── Grafana ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    networks:
+      - consul-mesh
+    depends_on:
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+
+  # ─── Load Generator ───────────────────────────────────────────────────────
+  # Sends steady traffic through Envoy → web → api → payments → currency + cache
+  loadgen:
+    image: curlimages/curl:8.7.1
+    container_name: loadgen
+    restart: unless-stopped
+    depends_on:
+      envoy:
+        condition: service_healthy
+      web:
+        condition: service_started
+    networks:
+      - consul-mesh
+    entrypoint:
+      - sh
+      - -c
+      - |
+        echo "Waiting for services to start..."
+        sleep 20
+        while true; do
+          # Primary path: through Envoy (generates access logs + Envoy metrics)
+          curl -sf http://envoy:21000/ > /dev/null
+          curl -sf http://envoy:21000/ > /dev/null
+          curl -sf http://envoy:21000/ > /dev/null
+          # Direct hit to web (bypasses Envoy, still generates traces)
+          curl -sf http://web:9090/ > /dev/null
+          sleep 2
+        done
