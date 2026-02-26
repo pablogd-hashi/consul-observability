@@ -63,6 +63,17 @@ data:
         static_configs:
           - targets:
               - otel-collector.observability.svc.cluster.local:8888
+
+      # Service graph topology metrics from the OTel servicegraphconnector.
+      # Emits traces_service_graph_request_total{client="web",server="api",...}
+      # which powers the "Service Dependency Map" node graph panel in Grafana.
+      - job_name: servicegraph
+        static_configs:
+          - targets:
+              - otel-collector.observability.svc.cluster.local:8889
+        relabel_configs:
+          - target_label: instance
+            replacement: otel-collector-servicegraph
 ---
 apiVersion: v1
 kind: ServiceAccount

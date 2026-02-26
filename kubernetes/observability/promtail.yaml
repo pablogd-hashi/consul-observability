@@ -1,6 +1,13 @@
 # kubernetes/observability/promtail.yaml
-# Promtail DaemonSet — scrapes pod container logs from /var/log/pods and ships to Loki.
-# Collects Envoy access logs (stdout), app logs, and Consul agent logs.
+# Promtail DaemonSet — scrapes Kubernetes pod logs from every node's
+# /var/log/pods and ships them to Loki with labels:
+#   namespace, pod, container, app
+#
+# The "Envoy Access Logs" Grafana dashboard queries:
+#   {namespace="default", container="consul-dataplane"}
+# which matches the Consul Connect sidecar container that wraps Envoy.
+# Each pod's app label (e.g. app=web) becomes a Loki label so
+# "Rate by Service" panels can group by service name.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -49,29 +56,33 @@ data:
 
     scrape_configs:
       - job_name: kubernetes-pods
-        pipeline_stages:
-          # Try to parse JSON logs (Envoy access logs written to stdout)
-          - json:
-              expressions:
-                trace_id: trace_id
-                span_id: span_id
-                level: level
-                msg: msg
-              # Non-JSON logs pass through without error
-          - labels:
-              trace_id:
-              span_id:
-              level:
-
         kubernetes_sd_configs:
           - role: pod
 
+        pipeline_stages:
+          # KinD uses containerd which writes CRI-format log files:
+          #   <timestamp> <stream> <flags> <log-body>
+          # The cri stage strips that wrapper so the log field is the raw
+          # application output (e.g. Envoy JSON access log or app JSON log).
+          # Without this stage, Loki's "| json" would fail because the full
+          # CRI-prefixed line is not valid JSON.
+          - cri: {}
+
+          # No additional label extraction here — keep stream labels low-cardinality.
+          # The dashboard uses Loki's "| json" pipeline at query time to parse
+          # Envoy fields (response_code, duration, method, path, upstream_host).
+
         relabel_configs:
-          # Only scrape pods that have a namespace label (all pods do)
+          # Drop pods that are not in a running phase
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed|Completed
+            action: drop
+
+          # Set the node as the host for log routing
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: __host__
 
-          # Extract useful labels
+          # Promote key k8s metadata as Loki stream labels
           - source_labels: [__meta_kubernetes_namespace]
             target_label: namespace
           - source_labels: [__meta_kubernetes_pod_name]
@@ -81,14 +92,13 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app]
             target_label: app
 
-          # Restrict to namespaces we care about (default + consul + observability)
+          # Restrict log collection to namespaces we care about
           - source_labels: [__meta_kubernetes_namespace]
             regex: "default|consul|observability"
             action: keep
 
-          # Construct the exact pod log path from all metadata:
+          # Construct the exact pod log path:
           # /var/log/pods/<namespace>_<pod-name>_<pod-uid>/<container-name>/*.log
-          # Using 4 labels joined by _ so we can capture them as groups.
           - source_labels:
               - __meta_kubernetes_namespace
               - __meta_kubernetes_pod_name
@@ -115,19 +125,21 @@ spec:
       labels:
         app: promtail
       annotations:
+        # Opt out of Consul Connect injection — Promtail needs host network access
         consul.hashicorp.com/connect-inject: "false"
     spec:
       serviceAccountName: promtail
       tolerations:
-        - key: node-role.kubernetes.io/master
+        # Allow running on control-plane nodes (required for single-node KinD)
+        - key: node-role.kubernetes.io/control-plane
           operator: Exists
           effect: NoSchedule
-        - key: node-role.kubernetes.io/control-plane
+        - key: node-role.kubernetes.io/master
           operator: Exists
           effect: NoSchedule
       containers:
         - name: promtail
-          image: grafana/promtail:3.0.0
+          image: grafana/promtail:3.1.0
           args:
             - "-config.file=/etc/promtail/promtail.yml"
           ports:
@@ -136,9 +148,11 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/promtail
+            # /var/log contains /var/log/pods — the CRI log directory
             - name: varlog
               mountPath: /var/log
               readOnly: true
+            # Needed by cri stage to resolve symlinks into the container overlay FS
             - name: varlibdockercontainers
               mountPath: /var/lib/docker/containers
               readOnly: true

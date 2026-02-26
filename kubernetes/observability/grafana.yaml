@@ -1,14 +1,16 @@
 # kubernetes/observability/grafana.yaml
-# Grafana with pre-provisioned datasources and official HashiCorp proxy-metrics dashboards.
-# Dashboards sourced from:
-#   https://github.com/hashicorp-education/learn-consul-proxy-metrics/tree/main/dashboards
+# Grafana with pre-provisioned datasources and 4 observability dashboards:
+#   service-health.json        — error rate, latency, volume, circuit breakers
+#   consul-health.json         — Consul cluster health (Consul 1.22+ metrics)
+#   service-to-service.json    — service-to-service traffic (Envoy metrics)
+#   logs.json                  — Envoy access logs via Promtail -> Loki
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: grafana-dashboards
   namespace: observability
 data:
-  data-plane-health.json: |
+  service-health.json: |
     {
       "annotations": {
         "list": [
@@ -22,12 +24,6 @@ data:
             "hide": true,
             "iconColor": "rgba(0, 211, 255, 1)",
             "name": "Annotations & Alerts",
-            "target": {
-              "limit": 100,
-              "matchAny": false,
-              "tags": [],
-              "type": "dashboard"
-            },
             "type": "dashboard"
           }
         ]
@@ -36,936 +32,64 @@ data:
       "fiscalYearStartMonth": 0,
       "graphTooltip": 0,
       "links": [],
-      "liveNow": false,
       "panels": [
         {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "mappings": [],
-              "min": 0,
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "red",
-                    "value": null
-                  },
-                  {
-                    "color": "#EAB839",
-                    "value": 5
-                  },
-                  {
-                    "color": "green",
-                    "value": 6
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
+          "collapsed": false,
           "gridPos": {
-            "h": 7,
-            "w": 9,
+            "h": 1,
+            "w": 24,
             "x": 0,
             "y": 0
           },
-          "id": 65,
-          "options": {
-            "orientation": "auto",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showThresholdLabels": false,
-            "showThresholdMarkers": true
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(envoy_server_live{app!=\"traffic-generator\"})",
-              "instant": false,
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Running HashiCups services",
-          "type": "gauge"
+          "id": 5,
+          "panels": [],
+          "title": "Services Health",
+          "type": "row"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "reqps"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 10,
-            "x": 9,
-            "y": 0
-          },
-          "id": 61,
-          "options": {
-            "legend": {
-              "calcs": [
-                "max",
-                "mean",
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "rate(envoy_listener_downstream_cx_overload_reject{}[$__interval])",
-              "hide": false,
-              "instant": false,
-              "interval": "3m",
-              "legendFormat": "{{namespace}} : {{consul_source_service}}-{{envoy_listener_address}}-overload",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "rate(envoy_listener_downstream_global_cx_overflow{}[$__interval])",
-              "hide": false,
-              "interval": "3m",
-              "legendFormat": "{{namespace}} : {{consul_source_service}}-{{envoy_listener_address}}-overflow",
-              "range": true,
-              "refId": "B"
-            }
-          ],
-          "title": "Connections Rejected",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "smooth",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "links": [],
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 9,
-            "x": 0,
-            "y": 7
-          },
-          "id": 70,
-          "links": [],
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "builder",
-              "exemplar": true,
-              "expr": "sum by(app, envoy_cluster_name) (envoy_cluster_upstream_cx_active{consul_destination_namespace=\"$namespace\"})",
-              "format": "time_series",
-              "interval": "",
-              "intervalFactor": 2,
-              "legendFormat": "{{envoy_cluster_name}} ({{service}})",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Total active upstream connections",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 10,
-            "x": 9,
-            "y": 7
-          },
-          "id": 41,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last",
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum by(namespace,app,envoy_response_code_class) (rate(envoy_cluster_upstream_rq_xx[5m]))",
-              "legendFormat": "{{namespace}} : {{app}}-{{envoy_response_code_class}}xx",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Upstream Rq by Status Code",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 10,
-            "x": 9,
-            "y": 14
-          },
-          "id": 51,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last",
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(rate(envoy_http_downstream_rq_xx{envoy_http_conn_manager_prefix=\"public_listener\"}[5m])) by (namespace, app,envoy_response_code_class)\n",
-              "legendFormat": "{{namespace}} : {{app}}-{{envoy_response_code_class}}xx",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Downstream Rq by Status Code",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "smooth",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "never",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "links": [],
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 7,
-            "w": 9,
-            "x": 0,
-            "y": 15
-          },
-          "id": 71,
-          "links": [],
-          "options": {
-            "legend": {
-              "calcs": [],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "multi",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "exemplar": true,
-              "expr": "sum(envoy_http_downstream_cx_active{app=~\"$app\"}) by (app)",
-              "format": "time_series",
-              "interval": "",
-              "intervalFactor": 2,
-              "legendFormat": "{{service}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Total active HTTP downstream connections",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 6,
-            "w": 14,
-            "x": 0,
-            "y": 22
-          },
-          "id": 47,
-          "options": {
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum by(app, envoy_response_code_class) (increase(envoy_http_downstream_rq_xx{envoy_http_conn_manager_prefix=\"public_listener\", namespace=~\"$namespace\", app=~\"$app\"}[5m]))",
-              "legendFormat": "{{app}}-{{envoy_response_code_class}}xx",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "HTTP Status ( $app )",
-          "type": "timeseries"
-        }
-      ],
-      "refresh": "",
-      "revision": 1,
-      "schemaVersion": 38,
-      "style": "dark",
-      "tags": [],
-      "templating": {
-        "list": [
-          {
-            "current": {
-              "selected": true,
-              "text": "default",
-              "value": "default"
-            },
-            "hide": 0,
-            "includeAll": false,
-            "multi": false,
-            "name": "namespace",
-            "options": [
-              {
-                "selected": true,
-                "text": "default",
-                "value": "default"
-              },
-              {
-                "selected": false,
-                "text": "consul",
-                "value": "consul"
-              }
-            ],
-            "query": "default, consul",
-            "queryValue": "",
-            "skipUrlSync": false,
-            "type": "custom"
-          },
-          {
-            "current": {
-              "selected": false,
-              "text": "All",
-              "value": "$__all"
-            },
-            "datasource": {
-              "type": "prometheus",
-              "uid": "PBFA97CFB590B2093"
-            },
-            "definition": "label_values(app)",
-            "hide": 0,
-            "includeAll": true,
-            "multi": false,
-            "name": "app",
-            "options": [],
-            "query": {
-              "query": "label_values(app)",
-              "refId": "PrometheusVariableQueryEditor-VariableQuery"
-            },
-            "refresh": 1,
-            "regex": "",
-            "skipUrlSync": false,
-            "sort": 0,
-            "type": "query"
-          }
-        ]
-      },
-      "time": {
-        "from": "now-5m",
-        "to": "now"
-      },
-      "timepicker": {},
-      "timezone": "",
-      "title": "Data Plane Health",
-      "uid": "data-plane-health",
-      "version": 1,
-      "weekStart": ""
-    }
-  data-plane-performance.json: |
-    {
-      "annotations": {
-        "list": [
-          {
-            "builtIn": 1,
-            "datasource": {
-              "type": "grafana",
-              "uid": "-- Grafana --"
-            },
-            "enable": true,
-            "hide": true,
-            "iconColor": "rgba(0, 211, 255, 1)",
-            "name": "Annotations & Alerts",
-            "target": {
-              "limit": 100,
-              "matchAny": false,
-              "tags": [],
-              "type": "dashboard"
-            },
-            "type": "dashboard"
-          }
-        ]
-      },
-      "editable": true,
-      "fiscalYearStartMonth": 0,
-      "graphTooltip": 0,
-      "id": 3,
-      "links": [],
-      "liveNow": false,
-      "panels": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "decimals": 0,
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "percent"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 7,
-            "x": 0,
-            "y": 0
-          },
-          "id": 49,
-          "options": {
-            "displayMode": "gradient",
-            "minVizHeight": 10,
-            "minVizWidth": 0,
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color"
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "100 * max (container_memory_working_set_bytes{namespace=~\"$namespace\"} / on(container, pod) label_replace(kube_pod_container_resource_limits{resource=\"memory\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\")) by (pod)",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Mem Usage % by pod limits",
-          "type": "bargauge"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "decimals": 1,
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "#EAB839",
-                    "value": 60
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "percent"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 7,
-            "x": 7,
-            "y": 0
-          },
-          "id": 28,
-          "options": {
-            "displayMode": "gradient",
-            "minVizHeight": 10,
-            "minVizWidth": 0,
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "showUnfilled": true,
-            "valueMode": "color"
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "100 * max(\n  rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\"}[5m])\n    / on (container, pod)\n  label_replace(kube_pod_container_resource_limits{resource=\"cpu\"}, \"pod\", \"$1\", \"exported_pod\", \"(.+)\")\n) by (pod)",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "CPU Usage %  by pod limits",
-          "type": "bargauge"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "prometheus"
           },
           "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
-                "mode": "thresholds"
+                "mode": "palette-classic"
               },
+              "custom": {
+                "axisBorderShow": false,
+                "axisCenteredZero": false,
+                "axisColorMode": "text",
+                "axisLabel": "",
+                "axisPlacement": "auto",
+                "barAlignment": 0,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity",
+                "hideFrom": {
+                  "legend": false,
+                  "tooltip": false,
+                  "viz": false
+                },
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 1,
+                "scaleDistribution": {
+                  "type": "linear"
+                },
+                "showPoints": "auto",
+                "spanNulls": false,
+                "stacking": {
+                  "group": "A",
+                  "mode": "none"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "fieldMinMax": false,
               "mappings": [],
               "noValue": "0",
               "thresholds": {
@@ -977,61 +101,55 @@ data:
                   },
                   {
                     "color": "red",
-                    "value": 32
+                    "value": 80
                   }
                 ]
               },
-              "unit": "short"
+              "unit": "percent"
             },
             "overrides": []
           },
           "gridPos": {
-            "h": 4,
-            "w": 3,
-            "x": 14,
-            "y": 0
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 1
           },
-          "id": 58,
+          "id": 1,
           "options": {
-            "colorMode": "value",
-            "graphMode": "none",
-            "justifyMode": "auto",
-            "orientation": "auto",
-            "reduceOptions": {
-              "calcs": [
-                "lastNotNull"
-              ],
-              "fields": "",
-              "values": false
+            "legend": {
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
             },
-            "text": {
-              "titleSize": 12
-            },
-            "textMode": "auto"
+            "tooltip": {
+              "mode": "single",
+              "sort": "none"
+            }
           },
-          "pluginVersion": "10.0.3",
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "exemplar": false,
-              "expr": "sum by (app) (envoy_cluster_upstream_cx_active{app=\"$app\",namespace=~\"$namespace\",envoy_cluster_name!~\"consul-dataplane|prometheus.*|local_app|original-.*\"})",
-              "instant": true,
-              "legendFormat": "{{envoy_cluster_name}}",
-              "range": false,
+              "expr": "(\n  1 - (\n    sum(irate(envoy_cluster_upstream_rq_xx{envoy_response_code_class!=\"5\", consul_destination_service!=\"\"}[5m])) \n    by (local_cluster, consul_destination_service) \n    / \n    sum(irate(envoy_cluster_upstream_rq_xx{consul_destination_service!=\"\"}[5m])) \n    by (local_cluster, consul_destination_service)\n  )\n) * 100 > 1",
+              "instant": false,
+              "legendFormat": "{{local_cluster}} -> {{consul_destination_service}}",
+              "range": true,
               "refId": "A"
             }
           ],
-          "title": "Connections ( $app )",
-          "type": "stat"
+          "title": "Services with High Error Rate ",
+          "transparent": true,
+          "type": "timeseries"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -1039,26 +157,28 @@ data:
                 "mode": "palette-classic"
               },
               "custom": {
+                "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
                 "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
-                "fillOpacity": 0,
+                "fillOpacity": 10,
                 "gradientMode": "opacity",
                 "hideFrom": {
                   "legend": false,
                   "tooltip": false,
                   "viz": false
                 },
-                "lineInterpolation": "smooth",
-                "lineWidth": 2,
-                "pointSize": 5,
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 1,
                 "scaleDistribution": {
                   "type": "linear"
                 },
-                "showPoints": "never",
+                "showPoints": "auto",
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -1077,154 +197,8 @@ data:
                     "value": null
                   },
                   {
-                    "color": "#EAB839",
-                    "value": 0.00001
-                  },
-                  {
-                    "color": "red",
-                    "value": 0.00002
-                  }
-                ]
-              },
-              "unit": "s"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 7,
-            "x": 17,
-            "y": 0
-          },
-          "id": 18,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "rate(container_cpu_cfs_throttled_seconds_total{namespace=~\"$namespace\"}[5m])",
-              "legendFormat": "{{pod}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "CPU Throttled seconds by pod",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
                     "color": "red",
                     "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 4,
-            "w": 3,
-            "x": 14,
-            "y": 4
-          },
-          "id": 64,
-          "options": {
-            "colorMode": "value",
-            "graphMode": "none",
-            "justifyMode": "center",
-            "orientation": "horizontal",
-            "reduceOptions": {
-              "calcs": [
-                "last"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "textMode": "value_and_name"
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(rate(envoy_http_downstream_rq_total{namespace=~\"$namespace\",envoy_http_conn_manager_prefix=\"public_listener\"}[5m])) by (namespace)\n",
-              "legendFormat": "__auto",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Requests / sec",
-          "type": "stat"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "thresholds"
-              },
-              "decimals": 2,
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "#EAB839",
-                    "value": 5
-                  },
-                  {
-                    "color": "orange",
-                    "value": 8
-                  },
-                  {
-                    "color": "red",
-                    "value": 10
                   }
                 ]
               },
@@ -1233,753 +207,17 @@ data:
             "overrides": []
           },
           "gridPos": {
-            "h": 6,
-            "w": 24,
-            "x": 0,
-            "y": 8
-          },
-          "id": 31,
-          "options": {
-            "colorMode": "background",
-            "graphMode": "none",
-            "justifyMode": "auto",
-            "orientation": "vertical",
-            "reduceOptions": {
-              "calcs": [
-                "mean"
-              ],
-              "fields": "",
-              "values": false
-            },
-            "text": {},
-            "textMode": "value_and_name"
-          },
-          "pluginVersion": "10.0.3",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "histogram_quantile(0.50, sum by(le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\", app=~\"$app\"}[5m])))\n",
-              "hide": false,
-              "legendFormat": "p50",
-              "range": true,
-              "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.75, sum by(le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\", app=~\"$app\"}[5m])))",
-              "hide": false,
-              "legendFormat": "p75",
-              "range": true,
-              "refId": "B"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.90, sum by(le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\", app=~\"$app\"}[5m])))",
-              "hide": false,
-              "legendFormat": "p90",
-              "range": true,
-              "refId": "C"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(.999, sum by(le) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\", app=~\"$app\"}[5m])))",
-              "hide": false,
-              "legendFormat": "p99.9",
-              "range": true,
-              "refId": "D"
-            }
-          ],
-          "title": "Dataplane Latency ( $app )",
-          "transparent": true,
-          "type": "stat"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
             "h": 8,
-            "w": 6,
-            "x": 0,
-            "y": 14
-          },
-          "id": 33,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": false
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "9.4.7",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.50, sum by(le,app,namespace) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\"}[5m])))\n",
-              "hide": false,
-              "legendFormat": "{{namespace}} : {{app}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "transparent": true,
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "continuous-GrYlRd"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "min": 0,
-              "noValue": "0",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 6,
-            "x": 6,
-            "y": 14
-          },
-          "id": 32,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "9.4.7",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.75, sum by(le,app,namespace) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\"}[5m])))\n",
-              "hide": false,
-              "legendFormat": "{{namespace}} : {{app}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "transparent": true,
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "continuous-GrYlRd"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "min": 0,
-              "noValue": "0",
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 6,
+            "w": 12,
             "x": 12,
-            "y": 14
+            "y": 1
           },
-          "id": 50,
+          "id": 2,
           "options": {
             "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "9.4.7",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.90, sum by(le,app,namespace) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\"}[5m])))\n",
-              "hide": false,
-              "legendFormat": "{{namespace}} : {{app}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "transparent": true,
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 6,
-            "x": 18,
-            "y": 14
-          },
-          "id": 29,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "pluginVersion": "9.4.7",
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "histogram_quantile(0.999, sum by(le, app, namespace) (rate(envoy_cluster_upstream_rq_time_bucket{namespace=~\"$namespace\"}[5m])))\n",
-              "hide": false,
-              "legendFormat": "{{namespace}} : {{app}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "transparent": true,
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 6,
-            "x": 0,
-            "y": 22
-          },
-          "id": 47,
-          "options": {
-            "legend": {
-              "calcs": [
-                "sum"
-              ],
-              "displayMode": "table",
+              "calcs": [],
+              "displayMode": "list",
               "placement": "right",
-              "showLegend": true,
-              "sortBy": "Total",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum by(app, envoy_response_code_class) (increase(envoy_http_downstream_rq_xx{envoy_http_conn_manager_prefix=\"public_listener\", namespace=~\"$namespace\", app=~\"$app\"}[5m]))",
-              "legendFormat": "{{app}}-{{envoy_response_code_class}}xx",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "HTTP Status ( $app )",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "description": "",
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "short"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 6,
-            "x": 6,
-            "y": 22
-          },
-          "id": 63,
-          "options": {
-            "legend": {
-              "calcs": [
-                "max",
-                "mean",
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last *",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(envoy_cluster_upstream_rq_active{}) by (namespace,consul_source_service,envoy_cluster_name)",
-              "legendFormat": "{{namespace}} : {{consul_source_service}} : {{envoy_cluster_name}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Requests Active (Upstream)",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "reqps"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 8,
-            "w": 6,
-            "x": 12,
-            "y": 22
-          },
-          "id": 61,
-          "options": {
-            "legend": {
-              "calcs": [
-                "max",
-                "mean",
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
               "showLegend": true
             },
             "tooltip": {
@@ -1991,63 +229,49 @@ data:
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "exemplar": false,
-              "expr": "rate(envoy_listener_downstream_cx_overload_reject{}[$__interval])",
-              "hide": false,
+              "expr": "histogram_quantile(0.99, sum(rate(envoy_cluster_upstream_rq_time_bucket{consul_destination_service!~\"\"}[5m])) by (le,local_cluster, consul_destination_service))",
               "instant": false,
-              "interval": "3m",
-              "legendFormat": "{{namespace}} : {{consul_source_service}}-{{envoy_listener_address}}-overload",
+              "legendFormat": "{{local_cluster}} -> {{consul_destination_service}}",
               "range": true,
               "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "rate(envoy_listener_downstream_global_cx_overflow{}[$__interval])",
-              "hide": false,
-              "interval": "3m",
-              "legendFormat": "{{namespace}} : {{consul_source_service}}-{{envoy_listener_address}}-overflow",
-              "range": true,
-              "refId": "B"
             }
           ],
-          "title": "Connections Rejected",
+          "title": "P95 Latency",
+          "transparent": true,
           "type": "timeseries"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "prometheus"
           },
-          "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
                 "mode": "palette-classic"
               },
               "custom": {
+                "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
                 "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
+                "fillOpacity": 10,
+                "gradientMode": "opacity",
                 "hideFrom": {
                   "legend": false,
                   "tooltip": false,
                   "viz": false
                 },
+                "insertNulls": false,
                 "lineInterpolation": "linear",
                 "lineWidth": 1,
-                "pointSize": 5,
+                "pointSize": 1,
                 "scaleDistribution": {
                   "type": "linear"
                 },
@@ -2080,83 +304,45 @@ data:
           },
           "gridPos": {
             "h": 8,
-            "w": 6,
-            "x": 18,
-            "y": 22
+            "w": 12,
+            "x": 0,
+            "y": 9
           },
-          "id": 57,
+          "id": 3,
           "options": {
             "legend": {
               "calcs": [],
               "displayMode": "list",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Mean",
-              "sortDesc": false
+              "placement": "right",
+              "showLegend": true
             },
             "tooltip": {
               "mode": "single",
               "sort": "none"
             }
           },
-          "pluginVersion": "9.4.7",
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(rate(envoy_cluster_upstream_rq_time_count{namespace=~\"$namespace\",envoy_cluster_name!~\"prometheus_backend|local_app\"}[5m])) - on() sum(rate(envoy_cluster_upstream_rq_time_bucket{le=\"1\",envoy_cluster_name!~\"prometheus_backend|local_app\",namespace=~\"$namespace\"}[5m]))",
-              "hide": false,
-              "legendFormat": "<1ms",
-              "range": true,
-              "refId": "B"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(rate(envoy_cluster_upstream_rq_time_count{namespace=~\"$namespace\",envoy_cluster_name!~\"prometheus_backend|local_app\"}[5m])) - on() sum(rate(envoy_cluster_upstream_rq_time_bucket{le=\"5\",envoy_cluster_name!~\"prometheus_backend|local_app\",namespace=~\"$namespace\"}[5m]))\n",
-              "hide": false,
-              "legendFormat": "<5ms",
+              "expr": "sum(irate(envoy_cluster_upstream_rq_total{consul_destination_service!=\"\", consul_source_service!=\"mesh-gateway\"}[5m])) by (local_cluster, consul_destination_service) ",
+              "instant": false,
+              "legendFormat": "{{local_cluster}} -> {{consul_destination_service}}",
               "range": true,
               "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(rate(envoy_cluster_upstream_rq_time_count{namespace=~\"$namespace\",envoy_cluster_name!~\"prometheus_backend|local_app\"}[5m])) - on() sum(rate(envoy_cluster_upstream_rq_time_bucket{le=\"10\",envoy_cluster_name!~\"prometheus_backend|local_app\",namespace=~\"$namespace\"}[5m]))",
-              "hide": false,
-              "legendFormat": "<10ms",
-              "range": true,
-              "refId": "D"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(rate(envoy_cluster_upstream_rq_time_count{namespace=~\"$namespace\",envoy_cluster_name!~\"prometheus_backend|local_app\"}[5m])) - on() sum(rate(envoy_cluster_upstream_rq_time_bucket{le=\"25\",envoy_cluster_name!~\"prometheus_backend|local_app\",namespace=~\"$namespace\"}[5m]))",
-              "hide": false,
-              "legendFormat": "<25ms",
-              "range": true,
-              "refId": "C"
             }
           ],
-          "title": "$app - Latency by Throughput",
+          "title": "Request Volume",
+          "transparent": true,
           "type": "timeseries"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2164,26 +350,28 @@ data:
                 "mode": "palette-classic"
               },
               "custom": {
+                "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
-                "axisLabel": "BANDWIDTH",
+                "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
-                "fillOpacity": 15,
+                "fillOpacity": 10,
                 "gradientMode": "opacity",
                 "hideFrom": {
                   "legend": false,
                   "tooltip": false,
                   "viz": false
                 },
-                "lineInterpolation": "smooth",
-                "lineWidth": 2,
-                "pointSize": 5,
+                "insertNulls": false,
+                "lineInterpolation": "linear",
+                "lineWidth": 1,
+                "pointSize": 1,
                 "scaleDistribution": {
                   "type": "linear"
                 },
-                "showPoints": "never",
+                "showPoints": "auto",
                 "spanNulls": false,
                 "stacking": {
                   "group": "A",
@@ -2206,76 +394,45 @@ data:
                     "value": 80
                   }
                 ]
-              },
-              "unit": "bytes"
+              }
             },
             "overrides": []
           },
           "gridPos": {
-            "h": 7,
-            "w": 24,
-            "x": 0,
-            "y": 30
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 9
           },
-          "id": 12,
+          "id": 4,
           "options": {
             "legend": {
-              "calcs": [
-                "last",
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
+              "calcs": [],
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
             },
             "tooltip": {
-              "mode": "multi",
-              "sort": "asc"
+              "mode": "single",
+              "sort": "none"
             }
           },
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "rate(container_network_receive_bytes_total{namespace=\"$namespace\", pod=~\"$app.*\"}[5m])",
-              "legendFormat": "{{pod}}-rx",
+              "expr": "sum(envoy_cluster_upstream_cx_active{consul_destination_service!=\"\", consul_source_service!=\"mesh-gateway\"}) by (local_cluster, consul_destination_service)",
+              "instant": false,
+              "legendFormat": "{{local_cluster}} -> {{consul_destination_service}}",
               "range": true,
               "refId": "A"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "- rate(container_network_transmit_bytes_total{namespace=\"$namespace\", pod=~\"$app.*\"}[5m])",
-              "hide": false,
-              "legendFormat": "{{pod}}-tx",
-              "range": true,
-              "refId": "B"
-            },
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "exemplar": false,
-              "expr": "sum(rate(node_network_receive_drop_total{component=\"node-exporter\"}[5m]))",
-              "hide": false,
-              "instant": false,
-              "interval": "",
-              "legendFormat": "global-dropped-pkts",
-              "range": true,
-              "refId": "C"
             }
           ],
-          "title": "Network Bytes Rx and Tx",
+          "title": "Upstream Connections",
+          "transparent": true,
           "type": "timeseries"
         },
         {
@@ -2284,17 +441,17 @@ data:
             "h": 1,
             "w": 24,
             "x": 0,
-            "y": 37
+            "y": 17
           },
-          "id": 22,
+          "id": 6,
           "panels": [],
-          "title": "Extras",
+          "title": "Circuit Breaker",
           "type": "row"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "prometheus"
           },
           "fieldConfig": {
             "defaults": {
@@ -2302,22 +459,24 @@ data:
                 "mode": "palette-classic"
               },
               "custom": {
+                "axisBorderShow": false,
                 "axisCenteredZero": false,
                 "axisColorMode": "text",
                 "axisLabel": "",
                 "axisPlacement": "auto",
                 "barAlignment": 0,
                 "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
+                "fillOpacity": 10,
+                "gradientMode": "opacity",
                 "hideFrom": {
                   "legend": false,
                   "tooltip": false,
                   "viz": false
                 },
+                "insertNulls": false,
                 "lineInterpolation": "linear",
                 "lineWidth": 1,
-                "pointSize": 5,
+                "pointSize": 1,
                 "scaleDistribution": {
                   "type": "linear"
                 },
@@ -2349,209 +508,17 @@ data:
             "overrides": []
           },
           "gridPos": {
-            "h": 9,
-            "w": 8,
+            "h": 8,
+            "w": 12,
             "x": 0,
-            "y": 38
+            "y": 18
           },
-          "id": 39,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last",
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum by(namespace,app)(rate(envoy_cluster_upstream_rq_total{namespace=~\"$namespace\"}[5m]))",
-              "legendFormat": "{{namespace}}:{{app}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Upstream Rq Total",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 9,
-            "w": 8,
-            "x": 8,
-            "y": 38
-          },
-          "id": 41,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last",
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum by(namespace,app,envoy_response_code_class) (rate(envoy_cluster_upstream_rq_xx[5m]))",
-              "legendFormat": "{{namespace}} : {{app}}-{{envoy_response_code_class}}xx",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Upstream Rq by Status Code",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 9,
-            "w": 8,
-            "x": 16,
-            "y": 38
-          },
-          "id": 59,
+          "id": 7,
           "options": {
             "legend": {
               "calcs": [],
               "displayMode": "list",
-              "placement": "bottom",
+              "placement": "right",
               "showLegend": true
             },
             "tooltip": {
@@ -2563,59 +530,34 @@ data:
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "group(envoy_control_plane_connected_state{namespace=~\"$namespace\"}) by (local_cluster)",
-              "legendFormat": "__auto",
+              "expr": "sum (envoy_cluster_outlier_detection_ejections_active{consul_destination_service!~\"\", local_cluster!=\"mesh-gateway\"}) by (local_cluster, consul_destination_service)",
+              "instant": false,
+              "legendFormat": "{{local_cluster}} -> {{consul_destination_service}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Envoy Config Stale",
+          "title": "Active Circuit Breakers",
+          "transparent": true,
           "type": "timeseries"
         },
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
+            "uid": "prometheus"
           },
+          "description": "",
           "fieldConfig": {
             "defaults": {
               "color": {
-                "mode": "palette-classic"
+                "mode": "thresholds"
               },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
+              "decimals": 0,
               "mappings": [],
+              "min": 0,
               "thresholds": {
                 "mode": "absolute",
                 "steps": [
@@ -2624,8 +566,12 @@ data:
                     "value": null
                   },
                   {
+                    "color": "#EAB839",
+                    "value": 1
+                  },
+                  {
                     "color": "red",
-                    "value": 80
+                    "value": 5
                   }
                 ]
               }
@@ -2633,298 +579,133 @@ data:
             "overrides": []
           },
           "gridPos": {
-            "h": 9,
-            "w": 8,
-            "x": 0,
-            "y": 47
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 18
           },
-          "id": 45,
+          "id": 8,
           "options": {
-            "legend": {
+            "displayMode": "basic",
+            "maxVizHeight": 50,
+            "minVizHeight": 16,
+            "minVizWidth": 8,
+            "namePlacement": "auto",
+            "orientation": "horizontal",
+            "reduceOptions": {
               "calcs": [
-                "last",
-                "sum"
+                "last"
               ],
-              "displayMode": "table",
-              "placement": "right",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
+              "fields": "",
+              "values": false
             },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
+            "showUnfilled": true,
+            "sizing": "manual",
+            "valueMode": "color"
           },
+          "pluginVersion": "11.1.0",
           "targets": [
             {
               "datasource": {
                 "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
+                "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(rate(envoy_http_downstream_rq_total{namespace=~\"$namespace\",envoy_http_conn_manager_prefix=\"public_listener\"}[5m])) by (app, namespace)\n",
-              "legendFormat": "{{namespace}}:{{app}}",
+              "expr": "sum(increase(envoy_cluster_outlier_detection_ejections_consecutive_5xx{consul_destination_service!~\"\", local_cluster!=\"mesh-gateway\"}[$__range])) by (consul_destination_service)",
+              "instant": false,
+              "legendFormat": "{{consul_destination_service}}",
               "range": true,
               "refId": "A"
             }
           ],
-          "title": "Downstream Rq Total",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
+          "title": "Circuit Breakers Triggered",
+          "transformations": [
+            {
+              "id": "sortBy",
+              "options": {
+                "fields": {},
+                "sort": [
                   {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
+                    "desc": true
                   }
                 ]
               }
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 9,
-            "w": 8,
-            "x": 8,
-            "y": 47
-          },
-          "id": 51,
-          "options": {
-            "legend": {
-              "calcs": [
-                "last",
-                "sum"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "sum(rate(envoy_http_downstream_rq_xx{envoy_http_conn_manager_prefix=\"public_listener\"}[5m])) by (namespace, app,envoy_response_code_class)\n",
-              "legendFormat": "{{namespace}} : {{app}}-{{envoy_response_code_class}}xx",
-              "range": true,
-              "refId": "A"
             }
           ],
-          "title": "Downstream Rq by Status Code",
-          "type": "timeseries"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "fieldConfig": {
-            "defaults": {
-              "color": {
-                "mode": "palette-classic"
-              },
-              "custom": {
-                "axisCenteredZero": false,
-                "axisColorMode": "text",
-                "axisLabel": "",
-                "axisPlacement": "auto",
-                "barAlignment": 0,
-                "drawStyle": "line",
-                "fillOpacity": 0,
-                "gradientMode": "none",
-                "hideFrom": {
-                  "legend": false,
-                  "tooltip": false,
-                  "viz": false
-                },
-                "lineInterpolation": "linear",
-                "lineWidth": 1,
-                "pointSize": 5,
-                "scaleDistribution": {
-                  "type": "linear"
-                },
-                "showPoints": "auto",
-                "spanNulls": false,
-                "stacking": {
-                  "group": "A",
-                  "mode": "none"
-                },
-                "thresholdsStyle": {
-                  "mode": "off"
-                }
-              },
-              "mappings": [],
-              "thresholds": {
-                "mode": "absolute",
-                "steps": [
-                  {
-                    "color": "green",
-                    "value": null
-                  },
-                  {
-                    "color": "red",
-                    "value": 80
-                  }
-                ]
-              },
-              "unit": "cps"
-            },
-            "overrides": []
-          },
-          "gridPos": {
-            "h": 9,
-            "w": 8,
-            "x": 16,
-            "y": 47
-          },
-          "id": 62,
-          "options": {
-            "legend": {
-              "calcs": [
-                "max",
-                "mean",
-                "lastNotNull"
-              ],
-              "displayMode": "table",
-              "placement": "bottom",
-              "showLegend": true,
-              "sortBy": "Last *",
-              "sortDesc": true
-            },
-            "tooltip": {
-              "mode": "single",
-              "sort": "none"
-            }
-          },
-          "targets": [
-            {
-              "datasource": {
-                "type": "prometheus",
-                "uid": "PBFA97CFB590B2093"
-              },
-              "editorMode": "code",
-              "expr": "rate(envoy_listener_downstream_cx_total{namespace=~\"$namespace\"}[$__interval]) ",
-              "interval": "3m",
-              "legendFormat": "{{consul_source_datacenter}} : {{namespace}} : {{consul_source_service}} : {{envoy_listener_address}}",
-              "range": true,
-              "refId": "A"
-            }
-          ],
-          "title": "Envoy Connections/sec",
-          "type": "timeseries"
+          "transparent": true,
+          "type": "bargauge"
         }
       ],
-      "refresh": "",
-      "revision": 1,
-      "schemaVersion": 38,
-      "style": "dark",
+      "refresh": "5s",
+      "schemaVersion": 39,
       "tags": [],
       "templating": {
         "list": [
           {
-            "current": {
-              "selected": false,
-              "text": "default",
-              "value": "default"
-            },
-            "hide": 0,
-            "includeAll": false,
-            "multi": false,
-            "name": "namespace",
-            "options": [
-              {
-                "selected": true,
-                "text": "default",
-                "value": "default"
-              },
-              {
-                "selected": false,
-                "text": "consul",
-                "value": "consul"
-              }
-            ],
-            "query": "default, consul",
-            "skipUrlSync": false,
-            "type": "custom"
-          },
-          {
-            "current": {
-              "selected": true,
-              "text": "nginx",
-              "value": "nginx"
-            },
+            "current": {},
             "datasource": {
               "type": "prometheus",
-              "uid": "PBFA97CFB590B2093"
+              "uid": "prometheus"
             },
-            "definition": "label_values(app)",
+            "definition": "label_values(consul_source_service)",
             "hide": 0,
             "includeAll": true,
             "multi": false,
-            "name": "app",
+            "name": "source_service",
             "options": [],
             "query": {
-              "query": "label_values(app)",
+              "qryType": 1,
+              "query": "label_values(consul_source_service)",
               "refId": "PrometheusVariableQueryEditor-VariableQuery"
             },
             "refresh": 1,
             "regex": "",
+            "skipUrlSync": false,
+            "sort": 0,
+            "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "definition": "label_values(consul_destination_service)",
+            "hide": 0,
+            "includeAll": true,
+            "multi": true,
+            "name": "destination_service",
+            "options": [],
+            "query": {
+              "qryType": 1,
+              "query": "label_values(consul_destination_service)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "refresh": 1,
+            "regex": "",
+            "skipUrlSync": false,
+            "sort": 0,
+            "type": "query"
+          },
+          {
+            "current": {},
+            "datasource": {
+              "type": "prometheus",
+              "uid": "prometheus"
+            },
+            "definition": "label_values(namespace)",
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "name": "namespace",
+            "options": [],
+            "query": {
+              "qryType": 1,
+              "query": "label_values(namespace)",
+              "refId": "PrometheusVariableQueryEditor-VariableQuery"
+            },
+            "refresh": 1,
+            "regex": "/^(?!kube|monitoring).*/",
             "skipUrlSync": false,
             "sort": 0,
             "type": "query"
@@ -2936,1301 +717,821 @@ data:
         "to": "now"
       },
       "timepicker": {},
-      "timezone": "",
-      "title": "Data Plane Performance",
-      "uid": "data-plane-performance",
-      "version": 1,
+      "timezone": "browser",
+      "title": "Service Health",
+      "uid": "ffbs6tb0gr4lcb",
+      "version": 5,
       "weekStart": ""
     }
-  consul-server-health.json: |
+  consul-health.json: |
     {
-      "annotations": { "list": [] },
-      "description": "Consul server health — Raft, gossip, RPC, KV, and runtime metrics from the Datadog key metrics guide",
-      "editable": true,
-      "fiscalYearStartMonth": 0,
-      "graphTooltip": 1,
-      "id": null,
-      "links": [],
+      "title": "Consul Service Health",
+      "uid": "consul-health",
+      "description": "Consul cluster health: members, registered services, autopilot health, raft activity, and runtime metrics. Metric names reflect Consul 1.22+.",
+      "tags": ["consul", "health"],
+      "timezone": "browser",
+      "schemaVersion": 38,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": { "list": [] },
       "panels": [
         {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
-          "id": 100,
-          "title": "Raft — Leadership",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "Number of times a server became Raft leader. Should be 0 in steady state; spikes indicate instability.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }] }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
           "id": 1,
-          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Leader Elections (rate)",
+          "title": "LAN Members",
+          "description": "Total active Consul gossip members (servers + clients). consul_members_servers + consul_members_clients.",
           "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "increase(consul_raft_state_leader{job=\"consul\"}[5m])", "legendFormat": "elections", "refId": "A" }]
+          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "(consul_members_servers{datacenter=\"dc1\"} or vector(0)) + (consul_members_clients{datacenter=\"dc1\"} or vector(0))",
+              "legendFormat": "Members",
+              "refId": "A"
+            }
+          ]
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "1 = has leader, 0 = no leader. Should always be 1.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "mappings": [{ "options": { "0": { "color": "red", "index": 0, "text": "NO LEADER" }, "1": { "color": "green", "index": 1, "text": "Leader OK" } }, "type": "value" }], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
           "id": 2,
-          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Leader Present",
+          "title": "Service Instances",
+          "description": "Number of service instances registered in the catalog (consul_state_billable_service_instances).",
           "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_leader{job=\"consul\"}", "legendFormat": "leader", "refId": "A" }]
+          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "yellow", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "max(consul_state_billable_service_instances) or vector(0)",
+              "legendFormat": "Service Instances",
+              "refId": "A"
+            }
+          ]
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.leader.lastContact — how long (ms) for a leader to contact followers during lease check. Alert if P99 > 200ms.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "axisBorderShow": false, "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "pointSize": 5, "showPoints": "never", "spanNulls": true }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 200 }] }, "unit": "ms" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 16, "x": 8, "y": 1 },
           "id": 3,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Raft Leader Last Contact (ms)",
-          "type": "timeseries",
+          "title": "Autopilot Healthy",
+          "description": "Consul autopilot health (1 = healthy, 0 = degraded). Green = cluster is healthy.",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              },
+              "unit": "short",
+              "mappings": [
+                { "type": "value", "options": { "0": { "text": "DEGRADED", "color": "red" }, "1": { "text": "HEALTHY", "color": "green" } } }
+              ]
+            }
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": { "calcs": ["lastNotNull"] }
+          },
           "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_leader_lastContact{job=\"consul\",quantile=\"0.5\"}", "legendFormat": "P50", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_leader_lastContact{job=\"consul\",quantile=\"0.9\"}", "legendFormat": "P90", "refId": "B" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_leader_lastContact{job=\"consul\",quantile=\"0.99\"}", "legendFormat": "P99", "refId": "C" }
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "consul_autopilot_healthy or vector(0)",
+              "legendFormat": "Autopilot",
+              "refId": "A"
+            }
           ]
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.state.candidate — increments when a node starts a leader election.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 3, "w": 4, "x": 0, "y": 5 },
           "id": 4,
-          "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Candidate Elections (5m)",
-          "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "increase(consul_raft_state_candidate{job=\"consul\"}[5m])", "legendFormat": "candidates", "refId": "A" }]
+          "title": "Catalog API Activity",
+          "description": "Rate of catalog register / deregister API calls — shows mesh churn (consul_client_api_success_catalog_*).",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 10, "lineWidth": 1 }
+            }
+          },
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "rate(consul_client_api_success_catalog_register[1m])",
+              "legendFormat": "register/s",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "rate(consul_client_api_success_catalog_deregister[1m])",
+              "legendFormat": "deregister/s",
+              "refId": "B"
+            }
+          ]
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "Number of peers in the Raft cluster (should match server count: typically 3 or 5).",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 3, "w": 4, "x": 4, "y": 5 },
           "id": 5,
-          "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Raft Peers",
-          "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_peers{job=\"consul\"}", "legendFormat": "peers", "refId": "A" }]
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 8 },
-          "id": 101,
-          "title": "Raft — Commit Performance",
-          "type": "row"
-        },
-        {
+          "title": "Consul RPC Request Rate",
+          "description": "Incoming RPC requests per second (consul_client_rpc counter).",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.apply — rate of Raft log replication initiations by the leader.",
           "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ops" },
-            "overrides": []
+            "defaults": {
+              "unit": "reqps",
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 10, "lineWidth": 1 }
+            }
           },
-          "gridPos": { "h": 7, "w": 8, "x": 0, "y": 9 },
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "rate(consul_client_rpc[1m])",
+              "legendFormat": "RPC req/s",
+              "refId": "A"
+            }
+          ]
+        },
+        {
           "id": 6,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Raft Apply Rate (ops/s)",
+          "title": "Raft Applied Index",
+          "description": "Monotonically increasing Raft commit index. A growing index confirms the leader is processing writes.",
           "type": "timeseries",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_raft_apply{job=\"consul\"}[1m])", "legendFormat": "apply/s", "refId": "A" }]
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 10, "lineWidth": 1 }
+            }
+          },
+          "options": {
+            "legend": { "calcs": ["last"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "consul_raft_applied_index",
+              "legendFormat": "applied index",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "consul_raft_last_index",
+              "legendFormat": "last index",
+              "refId": "B"
+            }
+          ]
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.commitTime — time (ms) for a single Raft commit. P99 > 500ms indicates disk or network bottleneck.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ms" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 8, "y": 9 },
           "id": 7,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Raft Commit Time (ms)",
+          "title": "Consul Runtime Memory",
+          "description": "Go heap allocated and total reserved bytes from the Consul process.",
           "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes",
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 10, "lineWidth": 1 }
+            }
+          },
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
+          },
           "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_commitTime{job=\"consul\",quantile=\"0.5\"}", "legendFormat": "P50", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_commitTime{job=\"consul\",quantile=\"0.99\"}", "legendFormat": "P99", "refId": "B" }
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "consul_runtime_alloc_bytes",
+              "legendFormat": "alloc bytes",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "consul_runtime_sys_bytes",
+              "legendFormat": "sys bytes",
+              "refId": "B"
+            }
           ]
         },
         {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.leader.dispatchLog — time (ms) for a Raft leader to write a log to disk.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ms" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 16, "y": 9 },
           "id": 8,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Leader Dispatch Log Latency (ms)",
+          "title": "Goroutines",
+          "description": "Number of active goroutines in the Consul server process.",
           "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 10, "lineWidth": 1 }
+            }
+          },
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
+          },
           "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_leader_dispatchLog{job=\"consul\",quantile=\"0.5\"}", "legendFormat": "P50", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_leader_dispatchLog{job=\"consul\",quantile=\"0.99\"}", "legendFormat": "P99", "refId": "B" }
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "consul_runtime_num_goroutines",
+              "legendFormat": "goroutines",
+              "refId": "A"
+            }
           ]
         },
         {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
-          "id": 102,
-          "title": "Gossip — Cluster Membership",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.serf.member.flap — node marked failed then healthy within 60s. Any value > 0 warrants investigation.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 0, "y": 17 },
           "id": 9,
-          "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Member Flaps (5m)",
-          "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "increase(consul_serf_member_flap{job=\"consul\"}[5m])", "legendFormat": "flaps", "refId": "A" }]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "Number of registered services in the Consul catalog.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 4, "w": 4, "x": 4, "y": 17 },
-          "id": 10,
-          "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Registered Services",
-          "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_catalog_services{job=\"consul\"}", "legendFormat": "services", "refId": "A" }]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.serf.member.flap over time — shows flapping patterns.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 16, "x": 8, "y": 17 },
-          "id": 11,
-          "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Member Flaps Over Time",
+          "title": "Registered Service Instances Over Time",
+          "description": "Total service instances tracked by Consul state store (consul_state_service_instances and consul_state_billable_service_instances).",
           "type": "timeseries",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "increase(consul_serf_member_flap{job=\"consul\"}[1m])", "legendFormat": "flaps/min", "refId": "A" }]
-        },
-        {
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.leader.reconcile — reconciliation events between leader catalog and memberlist.",
           "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 5 }] }, "unit": "short" },
-            "overrides": []
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "palette-classic" },
+              "custom": { "fillOpacity": 10, "lineWidth": 1 }
+            }
           },
-          "gridPos": { "h": 3, "w": 4, "x": 0, "y": 21 },
-          "id": 12,
-          "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Leader Reconcile Events (5m)",
-          "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "increase(consul_leader_reconcile{job=\"consul\"}[5m])", "legendFormat": "reconcile", "refId": "A" }]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.memberlist.health.score — 0 is perfectly healthy. Higher scores indicate degraded gossip health.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1 }, { "color": "red", "value": 3 }] }, "unit": "short" },
-            "overrides": []
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "single", "sort": "none" }
           },
-          "gridPos": { "h": 3, "w": 4, "x": 4, "y": 21 },
-          "id": 13,
-          "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
-          "title": "Memberlist Health Score",
-          "type": "stat",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_memberlist_health_score{job=\"consul\"}", "legendFormat": "health score", "refId": "A" }]
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
-          "id": 103,
-          "title": "RPC — Server Communication",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.rpc.request and consul.rpc.query — incoming RPC throughput on the server.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "reqps" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 0, "y": 25 },
-          "id": 14,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "RPC Request Rate",
-          "type": "timeseries",
           "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_rpc_request{job=\"consul\"}[1m])", "legendFormat": "one-off RPCs/s", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_rpc_query{job=\"consul\"}[1m])", "legendFormat": "blocking RPCs/s", "refId": "B" }
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "max(consul_state_service_instances) or vector(0)",
+              "legendFormat": "service instances",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "max(consul_state_billable_service_instances) or vector(0)",
+              "legendFormat": "billable instances",
+              "refId": "B"
+            }
           ]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.rpc.request_error — RPC errors on the server. Any sustained rate > 0 is a problem.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 20, "lineWidth": 2, "showPoints": "never", "spanNulls": true }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "unit": "reqps" },
-            "overrides": [{ "matcher": { "id": "byName", "options": "errors/s" }, "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }] }]
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 8, "y": 25 },
-          "id": 15,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "RPC Errors",
-          "type": "timeseries",
-          "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_rpc_request_error{job=\"consul\"}[1m])", "legendFormat": "server errors/s", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_client_rpc_failed{job=\"consul\"}[1m])", "legendFormat": "client errors/s", "refId": "B" }
-          ]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.client.rpc / consul.client.rpc.failed / consul.client.rpc.exceeded — client-side RPC health.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "reqps" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 16, "y": 25 },
-          "id": 16,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Client RPC Health",
-          "type": "timeseries",
-          "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_client_rpc{job=\"consul\"}[1m])", "legendFormat": "RPCs/s", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_client_rpc_exceeded{job=\"consul\"}[1m])", "legendFormat": "rate-limited/s", "refId": "B" }
-          ]
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
-          "id": 104,
-          "title": "KV Store",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.kvs.apply — time (ms) to update and replicate the KV store via Raft.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ms" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 33 },
-          "id": 17,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "KV Apply Latency (ms)",
-          "type": "timeseries",
-          "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_kvs_apply{job=\"consul\",quantile=\"0.5\"}", "legendFormat": "P50", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_kvs_apply{job=\"consul\",quantile=\"0.99\"}", "legendFormat": "P99", "refId": "B" }
-          ]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.kvs.apply count — rate of KV store updates.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ops" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 33 },
-          "id": 18,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "KV Write Rate (ops/s)",
-          "type": "timeseries",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "rate(consul_kvs_apply_count{job=\"consul\"}[1m])", "legendFormat": "writes/s", "refId": "A" }]
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
-          "id": 105,
-          "title": "Runtime — Memory & GC",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.runtime.alloc_bytes — heap memory currently in use by Consul. Sudden spikes indicate catalog growth or memory leaks.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "bytes" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 0, "y": 41 },
-          "id": 19,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Heap Allocated (bytes)",
-          "type": "timeseries",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_runtime_alloc_bytes{job=\"consul\"}", "legendFormat": "alloc_bytes", "refId": "A" }]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.runtime.sys_bytes — total virtual address space reserved by the Go runtime.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "bytes" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 8, "y": 41 },
-          "id": 20,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Virtual Memory (sys_bytes)",
-          "type": "timeseries",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_runtime_sys_bytes{job=\"consul\"}", "legendFormat": "sys_bytes", "refId": "A" }]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.runtime.gc_pause_ns — GC pause duration. Long pauses can cause leader heartbeat timeouts.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ns" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 8, "x": 16, "y": 41 },
-          "id": 21,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "GC Pause Duration (ns)",
-          "type": "timeseries",
-          "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_runtime_gc_pause_ns{job=\"consul\",quantile=\"0.5\"}", "legendFormat": "P50", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_runtime_gc_pause_ns{job=\"consul\",quantile=\"0.99\"}", "legendFormat": "P99", "refId": "B" }
-          ]
-        },
-        {
-          "collapsed": false,
-          "gridPos": { "h": 1, "w": 24, "x": 0, "y": 48 },
-          "id": 106,
-          "title": "Raft — Replication",
-          "type": "row"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.rpc.appendEntries — time (ms) for a follower to process replicated log entries from the leader.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "ms" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 12, "x": 0, "y": 49 },
-          "id": 22,
-          "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Append Entries Latency (ms) — Follower",
-          "type": "timeseries",
-          "targets": [
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_rpc_appendEntries{job=\"consul\",quantile=\"0.5\"}", "legendFormat": "P50", "refId": "A" },
-            { "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "consul_raft_rpc_appendEntries{job=\"consul\",quantile=\"0.99\"}", "legendFormat": "P99", "refId": "B" }
-          ]
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "description": "consul.raft.snapshot.create — number of snapshots Consul has created. Frequent snapshots indicate high churn.",
-          "fieldConfig": {
-            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "bars", "fillOpacity": 80, "lineWidth": 1, "showPoints": "never", "spanNulls": true }, "unit": "short" },
-            "overrides": []
-          },
-          "gridPos": { "h": 7, "w": 12, "x": 12, "y": 49 },
-          "id": 23,
-          "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
-          "title": "Raft Snapshots Created",
-          "type": "timeseries",
-          "targets": [{ "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "increase(consul_raft_snapshot_create{job=\"consul\"}[5m])", "legendFormat": "snapshots/5m", "refId": "A" }]
         }
-      ],
-      "refresh": "30s",
-      "schemaVersion": 38,
-      "tags": ["consul", "raft", "gossip", "rpc", "kv", "server-health"],
-      "templating": { "list": [] },
-      "time": { "from": "now-30m", "to": "now" },
-      "timepicker": {},
-      "timezone": "browser",
-      "title": "Consul Server Health",
-      "uid": "consul-server-health",
-      "version": 1,
-      "weekStart": ""
+      ]
     }
-
-  service-traceability.json: |
+    
+  service-to-service.json: |
     {
-        "__inputs": [
-            {
-                "name": "DS_PROMETHEUS",
-                "label": "Prometheus",
-                "description": "",
-                "type": "datasource",
-                "pluginId": "prometheus",
-                "pluginName": "Prometheus"
-            },
-            {
-                "name": "DS_JAEGER",
-                "label": "Jaeger",
-                "description": "",
-                "type": "datasource",
-                "pluginId": "jaeger",
-                "pluginName": "Jaeger"
+      "title": "Service-to-Service Traffic",
+      "uid": "service-to-service",
+      "description": "Entry-point metrics from Envoy and distributed traces from Jaeger. Topology: web → api → [payments, cache] → currency.",
+      "tags": ["consul", "envoy", "fake-service", "mesh"],
+      "timezone": "browser",
+      "schemaVersion": 38,
+      "refresh": "15s",
+      "time": { "from": "now-30m", "to": "now" },
+      "templating": { "list": [] },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Request Rate (RPS)",
+          "description": "Inbound requests/s through the Envoy proxy",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 5 },
+                  { "color": "red", "value": 20 }
+                ]
+              }
             }
-        ],
-        "__elements": {},
-        "__requires": [
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "targets": [
             {
-                "type": "panel",
-                "id": "bargauge",
-                "name": "Bar gauge",
-                "version": ""
-            },
-            {
-                "type": "panel",
-                "id": "traces",
-                "name": "Traces",
-                "version": ""
-            },
-            {
-                "type": "grafana",
-                "id": "grafana",
-                "name": "Grafana",
-                "version": "11.1.0"
-            },
-            {
-                "type": "datasource",
-                "id": "prometheus",
-                "name": "Prometheus",
-                "version": "1.0.0"
-            },
-            {
-                "type": "datasource",
-                "id": "jaeger",
-                "name": "Jaeger",
-                "version": "1.0.0"
-            },
-            {
-                "type": "panel",
-                "id": "timeseries",
-                "name": "Time series",
-                "version": ""
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(envoy_cluster_upstream_rq_total[1m]))",
+              "legendFormat": "RPS",
+              "refId": "A"
             }
-        ],
-        "annotations": {
-            "list": [
-                {
-                    "builtIn": 1,
-                    "datasource": {
-                        "type": "grafana",
-                        "uid": "-- Grafana --"
-                    },
-                    "enable": true,
-                    "hide": true,
-                    "iconColor": "rgba(0, 211, 255, 1)",
-                    "name": "Annotations & Alerts",
-                    "type": "dashboard"
+          ]
+        },
+        {
+          "id": 2,
+          "title": "Error Rate (%)",
+          "description": "Percentage of 5xx responses from upstream",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.01 },
+                  { "color": "red", "value": 0.05 }
+                ]
+              }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(envoy_cluster_upstream_rq_xx{envoy_response_code_class=\"5\"}[1m])) / sum(rate(envoy_cluster_upstream_rq_total[1m]))",
+              "legendFormat": "Error %",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "title": "P99 Latency (ms)",
+          "description": "99th percentile upstream response time",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ms",
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 100 },
+                  { "color": "red", "value": 500 }
+                ]
+              }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.99, sum(rate(envoy_cluster_upstream_rq_time_bucket[1m])) by (le))",
+              "legendFormat": "p99",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Active Connections",
+          "description": "Upstream connections currently active",
+          "type": "stat",
+          "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "color": { "mode": "thresholds" },
+              "thresholds": {
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 50 },
+                  { "color": "red", "value": 200 }
+                ]
+              }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(envoy_cluster_upstream_cx_active)",
+              "legendFormat": "active",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Request Rate by Status Class",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "reqps", "color": { "mode": "palette-classic" } }
+          },
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (envoy_response_code_class) (rate(envoy_cluster_upstream_rq_xx[1m]))",
+              "legendFormat": "{{envoy_response_code_class}}xx",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum(rate(envoy_cluster_upstream_rq_total[1m]))",
+              "legendFormat": "total",
+              "refId": "B"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "title": "Response Time (P50 / P95 / P99)",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": { "unit": "ms", "color": { "mode": "palette-classic" } }
+          },
+          "options": {
+            "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" },
+            "tooltip": { "mode": "multi", "sort": "none" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.50, sum(rate(envoy_cluster_upstream_rq_time_bucket[1m])) by (le))",
+              "legendFormat": "p50",
+              "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.95, sum(rate(envoy_cluster_upstream_rq_time_bucket[1m])) by (le))",
+              "legendFormat": "p95",
+              "refId": "B"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "histogram_quantile(0.99, sum(rate(envoy_cluster_upstream_rq_time_bucket[1m])) by (le))",
+              "legendFormat": "p99",
+              "refId": "C"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "title": "Distributed Traces — Service Call Chain",
+          "description": "Full call chain: web → api → payments → currency + cache. Click any trace to see the waterfall.",
+          "type": "traces",
+          "gridPos": { "h": 10, "w": 24, "x": 0, "y": 12 },
+          "datasource": { "type": "jaeger", "uid": "jaeger" },
+          "targets": [
+            {
+              "datasource": { "type": "jaeger", "uid": "jaeger" },
+              "queryType": "search",
+              "service": "web",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "title": "Service Dependency Map",
+          "description": "Live service topology derived from distributed traces via the OTel servicegraphconnector. Each arrow = active call path, labelled with req/s. Works in both Docker and K8s — all services send Zipkin traces through OTel which derives the graph. Topology: web -> api -> [payments, cache] -> currency.",
+          "type": "nodeGraph",
+          "gridPos": { "h": 14, "w": 24, "x": 0, "y": 22 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "options": {
+            "nodes": { "mainStatUnit": "reqps" },
+            "edges": { "mainStatUnit": "reqps" }
+          },
+          "targets": [
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (client, server) (rate(traces_service_graph_request_total{client!=\"\",server!=\"\"}[1m]))",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": { "Time": true },
+                "renameByName": {
+                  "client": "source",
+                  "server": "target",
+                  "Value": "mainStat"
                 }
-            ]
-        },
-        "editable": true,
-        "fiscalYearStartMonth": 0,
-        "graphTooltip": 0,
-        "id": null,
-        "links": [],
-        "panels": [
-            {
-                "collapsed": false,
-                "gridPos": {
-                    "h": 1,
-                    "w": 24,
-                    "x": 0,
-                    "y": 0
-                },
-                "id": 5,
-                "panels": [],
-                "title": "Service Health \u2014 $source_service \u2192 $destination_service",
-                "type": "row"
-            },
-            {
-                "datasource": {
-                    "type": "prometheus",
-                    "uid": "${DS_PROMETHEUS}"
-                },
-                "description": "5xx error rate between service pairs. Only shows pairs with >1% error rate.",
-                "fieldConfig": {
-                    "defaults": {
-                        "color": {
-                            "mode": "palette-classic"
-                        },
-                        "custom": {
-                            "axisBorderShow": false,
-                            "axisCenteredZero": false,
-                            "axisColorMode": "text",
-                            "axisLabel": "",
-                            "axisPlacement": "auto",
-                            "barAlignment": 0,
-                            "drawStyle": "line",
-                            "fillOpacity": 10,
-                            "gradientMode": "opacity",
-                            "hideFrom": {
-                                "legend": false,
-                                "tooltip": false,
-                                "viz": false
-                            },
-                            "insertNulls": false,
-                            "lineInterpolation": "linear",
-                            "lineWidth": 2,
-                            "pointSize": 1,
-                            "scaleDistribution": {
-                                "type": "linear"
-                            },
-                            "showPoints": "auto",
-                            "spanNulls": false,
-                            "stacking": {
-                                "group": "A",
-                                "mode": "none"
-                            },
-                            "thresholdsStyle": {
-                                "mode": "line"
-                            }
-                        },
-                        "fieldMinMax": false,
-                        "mappings": [],
-                        "noValue": "0",
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "green",
-                                    "value": null
-                                },
-                                {
-                                    "color": "yellow",
-                                    "value": 1
-                                },
-                                {
-                                    "color": "red",
-                                    "value": 5
-                                }
-                            ]
-                        },
-                        "unit": "percent",
-                        "links": [
-                            {
-                                "title": "View traces in Jaeger",
-                                "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"refId\":\"A\",\"queryType\":\"search\",\"service\":\"${__series.labels.local_cluster}\",\"limit\":20}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}",
-                                "targetBlank": true
-                            }
-                        ]
-                    },
-                    "overrides": []
-                },
-                "gridPos": {
-                    "h": 8,
-                    "w": 12,
-                    "x": 0,
-                    "y": 1
-                },
-                "id": 1,
-                "options": {
-                    "legend": {
-                        "calcs": [],
-                        "displayMode": "list",
-                        "placement": "right",
-                        "showLegend": true
-                    },
-                    "tooltip": {
-                        "mode": "single",
-                        "sort": "none"
-                    }
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "prometheus",
-                            "uid": "${DS_PROMETHEUS}"
-                        },
-                        "editorMode": "code",
-                        "expr": "(\n  sum(irate(envoy_cluster_upstream_rq_xx{envoy_response_code_class=\"5\", consul_destination_service!=\"\", consul_source_service=~\"$source_service\", consul_destination_service=~\"$destination_service\"}[5m]))\n  by (local_cluster, consul_destination_service)\n  /\n  sum(irate(envoy_cluster_upstream_rq_xx{consul_destination_service!=\"\", consul_source_service=~\"$source_service\", consul_destination_service=~\"$destination_service\"}[5m]))\n  by (local_cluster, consul_destination_service)\n) * 100 > 0.1",
-                        "instant": false,
-                        "legendFormat": "{{local_cluster}} \u2192 {{consul_destination_service}}",
-                        "range": true,
-                        "refId": "A"
-                    }
-                ],
-                "title": "5xx Error Rate",
-                "transparent": true,
-                "type": "timeseries"
-            },
-            {
-                "datasource": {
-                    "type": "prometheus",
-                    "uid": "${DS_PROMETHEUS}"
-                },
-                "fieldConfig": {
-                    "defaults": {
-                        "color": {
-                            "mode": "palette-classic"
-                        },
-                        "custom": {
-                            "axisBorderShow": false,
-                            "axisCenteredZero": false,
-                            "axisColorMode": "text",
-                            "axisLabel": "",
-                            "axisPlacement": "auto",
-                            "barAlignment": 0,
-                            "drawStyle": "line",
-                            "fillOpacity": 10,
-                            "gradientMode": "opacity",
-                            "hideFrom": {
-                                "legend": false,
-                                "tooltip": false,
-                                "viz": false
-                            },
-                            "insertNulls": false,
-                            "lineInterpolation": "linear",
-                            "lineWidth": 2,
-                            "pointSize": 1,
-                            "scaleDistribution": {
-                                "type": "linear"
-                            },
-                            "showPoints": "auto",
-                            "spanNulls": false,
-                            "stacking": {
-                                "group": "A",
-                                "mode": "none"
-                            },
-                            "thresholdsStyle": {
-                                "mode": "off"
-                            }
-                        },
-                        "mappings": [],
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "green",
-                                    "value": null
-                                },
-                                {
-                                    "color": "red",
-                                    "value": 80
-                                }
-                            ]
-                        },
-                        "unit": "ms",
-                        "links": [
-                            {
-                                "title": "View traces in Jaeger",
-                                "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"refId\":\"A\",\"queryType\":\"search\",\"service\":\"${__series.labels.local_cluster}\",\"limit\":20}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}",
-                                "targetBlank": true
-                            }
-                        ]
-                    },
-                    "overrides": []
-                },
-                "gridPos": {
-                    "h": 8,
-                    "w": 12,
-                    "x": 12,
-                    "y": 1
-                },
-                "id": 2,
-                "options": {
-                    "legend": {
-                        "calcs": [],
-                        "displayMode": "list",
-                        "placement": "right",
-                        "showLegend": true
-                    },
-                    "tooltip": {
-                        "mode": "single",
-                        "sort": "none"
-                    }
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "prometheus",
-                            "uid": "${DS_PROMETHEUS}"
-                        },
-                        "editorMode": "code",
-                        "expr": "histogram_quantile(0.99,\n  sum(rate(envoy_cluster_upstream_rq_time_bucket{\n    consul_destination_service!=\"\",\n    consul_source_service=~\"$source_service\",\n    consul_destination_service=~\"$destination_service\"\n  }[5m]))\n  by (le, local_cluster, consul_destination_service)\n)",
-                        "instant": false,
-                        "legendFormat": "{{local_cluster}} \u2192 {{consul_destination_service}}",
-                        "range": true,
-                        "refId": "A"
-                    }
-                ],
-                "title": "P99 Latency",
-                "transparent": true,
-                "type": "timeseries"
-            },
-            {
-                "datasource": {
-                    "type": "prometheus",
-                    "uid": "${DS_PROMETHEUS}"
-                },
-                "fieldConfig": {
-                    "defaults": {
-                        "color": {
-                            "mode": "palette-classic"
-                        },
-                        "custom": {
-                            "axisBorderShow": false,
-                            "axisCenteredZero": false,
-                            "axisColorMode": "text",
-                            "axisLabel": "",
-                            "axisPlacement": "auto",
-                            "barAlignment": 0,
-                            "drawStyle": "line",
-                            "fillOpacity": 10,
-                            "gradientMode": "opacity",
-                            "hideFrom": {
-                                "legend": false,
-                                "tooltip": false,
-                                "viz": false
-                            },
-                            "insertNulls": false,
-                            "lineInterpolation": "linear",
-                            "lineWidth": 2,
-                            "pointSize": 1,
-                            "scaleDistribution": {
-                                "type": "linear"
-                            },
-                            "showPoints": "auto",
-                            "spanNulls": false,
-                            "stacking": {
-                                "group": "A",
-                                "mode": "none"
-                            },
-                            "thresholdsStyle": {
-                                "mode": "off"
-                            }
-                        },
-                        "mappings": [],
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "green",
-                                    "value": null
-                                },
-                                {
-                                    "color": "red",
-                                    "value": 80
-                                }
-                            ]
-                        },
-                        "links": [
-                            {
-                                "title": "View traces in Jaeger",
-                                "url": "/explore?orgId=1&left={\"datasource\":\"jaeger\",\"queries\":[{\"refId\":\"A\",\"queryType\":\"search\",\"service\":\"${__series.labels.local_cluster}\",\"limit\":20}],\"range\":{\"from\":\"${__from}\",\"to\":\"${__to}\"}}",
-                                "targetBlank": true
-                            }
-                        ]
-                    },
-                    "overrides": []
-                },
-                "gridPos": {
-                    "h": 8,
-                    "w": 12,
-                    "x": 0,
-                    "y": 9
-                },
-                "id": 3,
-                "options": {
-                    "legend": {
-                        "calcs": [],
-                        "displayMode": "list",
-                        "placement": "right",
-                        "showLegend": true
-                    },
-                    "tooltip": {
-                        "mode": "single",
-                        "sort": "none"
-                    }
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "prometheus",
-                            "uid": "${DS_PROMETHEUS}"
-                        },
-                        "editorMode": "code",
-                        "expr": "sum(\n  irate(envoy_cluster_upstream_rq_total{\n    consul_destination_service!=\"\",\n    consul_source_service=~\"$source_service\",\n    consul_destination_service=~\"$destination_service\",\n    local_cluster!=\"mesh-gateway\"\n  }[5m])\n) by (local_cluster, consul_destination_service)",
-                        "instant": false,
-                        "legendFormat": "{{local_cluster}} \u2192 {{consul_destination_service}}",
-                        "range": true,
-                        "refId": "A"
-                    }
-                ],
-                "title": "Request Volume (RPS)",
-                "transparent": true,
-                "type": "timeseries"
-            },
-            {
-                "datasource": {
-                    "type": "prometheus",
-                    "uid": "${DS_PROMETHEUS}"
-                },
-                "fieldConfig": {
-                    "defaults": {
-                        "color": {
-                            "mode": "palette-classic"
-                        },
-                        "custom": {
-                            "axisBorderShow": false,
-                            "axisCenteredZero": false,
-                            "axisColorMode": "text",
-                            "axisLabel": "",
-                            "axisPlacement": "auto",
-                            "barAlignment": 0,
-                            "drawStyle": "line",
-                            "fillOpacity": 10,
-                            "gradientMode": "opacity",
-                            "hideFrom": {
-                                "legend": false,
-                                "tooltip": false,
-                                "viz": false
-                            },
-                            "insertNulls": false,
-                            "lineInterpolation": "linear",
-                            "lineWidth": 2,
-                            "pointSize": 1,
-                            "scaleDistribution": {
-                                "type": "linear"
-                            },
-                            "showPoints": "auto",
-                            "spanNulls": false,
-                            "stacking": {
-                                "group": "A",
-                                "mode": "none"
-                            },
-                            "thresholdsStyle": {
-                                "mode": "off"
-                            }
-                        },
-                        "mappings": [],
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "green",
-                                    "value": null
-                                },
-                                {
-                                    "color": "red",
-                                    "value": 80
-                                }
-                            ]
-                        }
-                    },
-                    "overrides": []
-                },
-                "gridPos": {
-                    "h": 8,
-                    "w": 12,
-                    "x": 12,
-                    "y": 9
-                },
-                "id": 4,
-                "options": {
-                    "legend": {
-                        "calcs": [],
-                        "displayMode": "list",
-                        "placement": "right",
-                        "showLegend": true
-                    },
-                    "tooltip": {
-                        "mode": "single",
-                        "sort": "none"
-                    }
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "prometheus",
-                            "uid": "${DS_PROMETHEUS}"
-                        },
-                        "editorMode": "code",
-                        "expr": "sum(\n  envoy_cluster_upstream_cx_active{\n    consul_destination_service!=\"\",\n    consul_source_service=~\"$source_service\",\n    consul_destination_service=~\"$destination_service\",\n    local_cluster!=\"mesh-gateway\"\n  }\n) by (local_cluster, consul_destination_service)",
-                        "instant": false,
-                        "legendFormat": "{{local_cluster}} \u2192 {{consul_destination_service}}",
-                        "range": true,
-                        "refId": "A"
-                    }
-                ],
-                "title": "Active Upstream Connections",
-                "transparent": true,
-                "type": "timeseries"
-            },
-            {
-                "collapsed": false,
-                "gridPos": {
-                    "h": 1,
-                    "w": 24,
-                    "x": 0,
-                    "y": 17
-                },
-                "id": 6,
-                "panels": [],
-                "title": "Circuit Breaker",
-                "type": "row"
-            },
-            {
-                "datasource": {
-                    "type": "prometheus",
-                    "uid": "${DS_PROMETHEUS}"
-                },
-                "fieldConfig": {
-                    "defaults": {
-                        "color": {
-                            "mode": "palette-classic"
-                        },
-                        "custom": {
-                            "axisBorderShow": false,
-                            "axisCenteredZero": false,
-                            "axisColorMode": "text",
-                            "axisLabel": "",
-                            "axisPlacement": "auto",
-                            "barAlignment": 0,
-                            "drawStyle": "line",
-                            "fillOpacity": 10,
-                            "gradientMode": "opacity",
-                            "hideFrom": {
-                                "legend": false,
-                                "tooltip": false,
-                                "viz": false
-                            },
-                            "insertNulls": false,
-                            "lineInterpolation": "linear",
-                            "lineWidth": 2,
-                            "pointSize": 1,
-                            "scaleDistribution": {
-                                "type": "linear"
-                            },
-                            "showPoints": "auto",
-                            "spanNulls": false,
-                            "stacking": {
-                                "group": "A",
-                                "mode": "none"
-                            },
-                            "thresholdsStyle": {
-                                "mode": "off"
-                            }
-                        },
-                        "mappings": [],
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "green",
-                                    "value": null
-                                },
-                                {
-                                    "color": "red",
-                                    "value": 80
-                                }
-                            ]
-                        }
-                    },
-                    "overrides": []
-                },
-                "gridPos": {
-                    "h": 8,
-                    "w": 12,
-                    "x": 0,
-                    "y": 18
-                },
-                "id": 7,
-                "options": {
-                    "legend": {
-                        "calcs": [],
-                        "displayMode": "list",
-                        "placement": "right",
-                        "showLegend": true
-                    },
-                    "tooltip": {
-                        "mode": "single",
-                        "sort": "none"
-                    }
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "prometheus",
-                            "uid": "${DS_PROMETHEUS}"
-                        },
-                        "editorMode": "code",
-                        "expr": "sum(\n  envoy_cluster_outlier_detection_ejections_active{\n    consul_destination_service!=\"\",\n    consul_source_service=~\"$source_service\",\n    consul_destination_service=~\"$destination_service\",\n    local_cluster!=\"mesh-gateway\"\n  }\n) by (local_cluster, consul_destination_service)",
-                        "instant": false,
-                        "legendFormat": "{{local_cluster}} \u2192 {{consul_destination_service}}",
-                        "range": true,
-                        "refId": "A"
-                    }
-                ],
-                "title": "Active Circuit Breakers",
-                "transparent": true,
-                "type": "timeseries"
-            },
-            {
-                "datasource": {
-                    "type": "prometheus",
-                    "uid": "${DS_PROMETHEUS}"
-                },
-                "description": "Number of times a host was ejected for consecutive 5xx errors within the selected time range.",
-                "fieldConfig": {
-                    "defaults": {
-                        "color": {
-                            "mode": "thresholds"
-                        },
-                        "decimals": 0,
-                        "mappings": [],
-                        "min": 0,
-                        "thresholds": {
-                            "mode": "absolute",
-                            "steps": [
-                                {
-                                    "color": "green",
-                                    "value": null
-                                },
-                                {
-                                    "color": "#EAB839",
-                                    "value": 1
-                                },
-                                {
-                                    "color": "red",
-                                    "value": 5
-                                }
-                            ]
-                        }
-                    },
-                    "overrides": []
-                },
-                "gridPos": {
-                    "h": 8,
-                    "w": 12,
-                    "x": 12,
-                    "y": 18
-                },
-                "id": 8,
-                "options": {
-                    "displayMode": "basic",
-                    "maxVizHeight": 50,
-                    "minVizHeight": 16,
-                    "minVizWidth": 8,
-                    "namePlacement": "auto",
-                    "orientation": "horizontal",
-                    "reduceOptions": {
-                        "calcs": [
-                            "last"
-                        ],
-                        "fields": "",
-                        "values": false
-                    },
-                    "showUnfilled": true,
-                    "sizing": "manual",
-                    "valueMode": "color"
-                },
-                "pluginVersion": "11.1.0",
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "prometheus",
-                            "uid": "${DS_PROMETHEUS}"
-                        },
-                        "editorMode": "code",
-                        "expr": "sum(\n  increase(envoy_cluster_outlier_detection_ejections_consecutive_5xx{\n    consul_destination_service!=\"\",\n    consul_source_service=~\"$source_service\",\n    consul_destination_service=~\"$destination_service\",\n    local_cluster!=\"mesh-gateway\"\n  }[$__range])\n) by (consul_destination_service)",
-                        "instant": false,
-                        "legendFormat": "{{consul_destination_service}}",
-                        "range": true,
-                        "refId": "A"
-                    }
-                ],
-                "title": "Circuit Breakers Triggered",
-                "transformations": [
-                    {
-                        "id": "sortBy",
-                        "options": {
-                            "fields": {},
-                            "sort": [
-                                {
-                                    "desc": true
-                                }
-                            ]
-                        }
-                    }
-                ],
-                "transparent": true,
-                "type": "bargauge"
-            },
-            {
-                "collapsed": false,
-                "gridPos": {
-                    "h": 1,
-                    "w": 24,
-                    "x": 0,
-                    "y": 26
-                },
-                "id": 9,
-                "panels": [],
-                "title": "Distributed Traces \u2014 Jaeger",
-                "type": "row"
-            },
-            {
-                "datasource": {
-                    "type": "jaeger",
-                    "uid": "${DS_JAEGER}"
-                },
-                "description": "Live traces from the selected source service. Click any trace to open in Jaeger.",
-                "gridPos": {
-                    "h": 14,
-                    "w": 12,
-                    "x": 0,
-                    "y": 27
-                },
-                "id": 10,
-                "options": {
-                    "dedupStrategy": "none",
-                    "enableLogDetails": true,
-                    "prettifyLogMessage": false,
-                    "showLabels": false,
-                    "showTime": false,
-                    "sortOrder": "Descending",
-                    "wrapLogMessage": false
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "jaeger",
-                            "uid": "${DS_JAEGER}"
-                        },
-                        "queryType": "search",
-                        "refId": "A",
-                        "service": "$source_service",
-                        "limit": 20
-                    }
-                ],
-                "title": "Recent Traces \u2014 $source_service",
-                "transparent": true,
-                "type": "traces"
-            },
-            {
-                "datasource": {
-                    "type": "jaeger",
-                    "uid": "${DS_JAEGER}"
-                },
-                "description": "Live traces from the selected destination service. Click any trace to open in Jaeger.",
-                "gridPos": {
-                    "h": 14,
-                    "w": 12,
-                    "x": 12,
-                    "y": 27
-                },
-                "id": 11,
-                "options": {
-                    "dedupStrategy": "none",
-                    "enableLogDetails": true,
-                    "prettifyLogMessage": false,
-                    "showLabels": false,
-                    "showTime": false,
-                    "sortOrder": "Descending",
-                    "wrapLogMessage": false
-                },
-                "targets": [
-                    {
-                        "datasource": {
-                            "type": "jaeger",
-                            "uid": "${DS_JAEGER}"
-                        },
-                        "queryType": "search",
-                        "refId": "A",
-                        "service": "$destination_service",
-                        "limit": 20
-                    }
-                ],
-                "title": "Recent Traces \u2014 $destination_service",
-                "transparent": true,
-                "type": "traces"
+              }
             }
-        ],
-        "refresh": "10s",
-        "schemaVersion": 39,
-        "tags": [
-            "consul",
-            "envoy",
-            "jaeger",
-            "tracing"
-        ],
-        "templating": {
-            "list": [
-                {
-                    "current": {},
-                    "datasource": {
-                        "type": "prometheus",
-                        "uid": "${DS_PROMETHEUS}"
-                    },
-                    "definition": "label_values(envoy_cluster_upstream_rq_total{consul_destination_service!=\"\"}, consul_source_service)",
-                    "hide": 0,
-                    "includeAll": true,
-                    "multi": false,
-                    "name": "source_service",
-                    "options": [],
-                    "query": {
-                        "qryType": 1,
-                        "query": "label_values(envoy_cluster_upstream_rq_total{consul_destination_service!=\"\"}, consul_source_service)",
-                        "refId": "PrometheusVariableQueryEditor-VariableQuery"
-                    },
-                    "refresh": 2,
-                    "regex": "",
-                    "skipUrlSync": false,
-                    "sort": 1,
-                    "type": "query"
-                },
-                {
-                    "current": {},
-                    "datasource": {
-                        "type": "prometheus",
-                        "uid": "${DS_PROMETHEUS}"
-                    },
-                    "definition": "label_values(envoy_cluster_upstream_rq_total{consul_destination_service!=\"\"}, consul_destination_service)",
-                    "hide": 0,
-                    "includeAll": true,
-                    "multi": true,
-                    "name": "destination_service",
-                    "options": [],
-                    "query": {
-                        "qryType": 1,
-                        "query": "label_values(envoy_cluster_upstream_rq_total{consul_destination_service!=\"\"}, consul_destination_service)",
-                        "refId": "PrometheusVariableQueryEditor-VariableQuery"
-                    },
-                    "refresh": 2,
-                    "regex": "",
-                    "skipUrlSync": false,
-                    "sort": 1,
-                    "type": "query"
-                }
-            ]
+          ]
+        }
+      ]
+    }
+    
+  logs.json: |
+    {
+      "title": "Envoy Access Logs",
+      "uid": "envoy-logs-k8s",
+      "description": "Envoy sidecar access logs via Promtail. In K8s, Consul Connect writes access logs to stdout of the consul-dataplane container, which Promtail scrapes.",
+      "tags": [
+        "logs",
+        "envoy",
+        "loki"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 38,
+      "refresh": "10s",
+      "time": {
+        "from": "now-30m",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Total Requests (5m rate)",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 0,
+            "y": 0
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+              "calcs": [
+                "sum"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {
+                    "color": "blue",
+                    "value": null
+                  }
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"default\", container=\"consul-dataplane\"} [5m]))",
+              "legendFormat": "requests",
+              "refId": "A"
+            }
+          ]
         },
-        "time": {
-            "from": "now-15m",
-            "to": "now"
+        {
+          "id": 2,
+          "title": "5xx Errors (5m rate)",
+          "type": "stat",
+          "gridPos": {
+            "h": 4,
+            "w": 6,
+            "x": 6,
+            "y": 0
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "options": {
+            "colorMode": "background",
+            "graphMode": "area",
+            "reduceOptions": {
+              "calcs": [
+                "sum"
+              ]
+            }
+          },
+          "fieldConfig": {
+            "defaults": {
+              "color": {
+                "mode": "thresholds"
+              },
+              "thresholds": {
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              },
+              "unit": "short"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum(count_over_time({namespace=\"default\", container=\"consul-dataplane\"} | json | response_code >= 500 [5m]))",
+              "legendFormat": "5xx",
+              "refId": "A"
+            }
+          ]
         },
-        "timepicker": {},
-        "timezone": "browser",
-        "title": "Service Traceability",
-        "uid": "consul-service-traceability",
-        "version": 1,
-        "weekStart": ""
+        {
+          "id": 3,
+          "title": "Request Rate by Service",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 4
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "fillOpacity": 10,
+                "lineWidth": 1
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum by (app) (rate({namespace=\"default\", container=\"consul-dataplane\"} [1m]))",
+              "legendFormat": "{{app}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "title": "Error Rate by Service",
+          "type": "timeseries",
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 4
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "fillOpacity": 10,
+                "lineWidth": 1
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "calcs": [
+                "mean"
+              ],
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {
+              "mode": "multi"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "sum by (app) (rate({namespace=\"default\", container=\"consul-dataplane\"} | json | response_code >= 500 [1m]))",
+              "legendFormat": "{{app}} 5xx",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "title": "Live Log Stream",
+          "type": "logs",
+          "gridPos": {
+            "h": 12,
+            "w": 24,
+            "x": 0,
+            "y": 12
+          },
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "options": {
+            "dedupStrategy": "none",
+            "enableLogDetails": true,
+            "showTime": true,
+            "sortOrder": "Descending",
+            "wrapLogMessage": true
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "{namespace=\"default\", container=\"consul-dataplane\"}",
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ]
+        }
+      ]
     }
 ---
 apiVersion: v1

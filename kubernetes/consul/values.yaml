@@ -28,7 +28,7 @@ global:
   metrics:
     enabled: true
     enableAgentMetrics: true
-    agentMetricsRetentionTime: "1m"
+    agentMetricsRetentionTime: "10m"
 
   # ── Gossip encryption ─────────────────────────────────────────────────────
   # Generate key: consul keygen  (or: openssl rand -base64 32)
@@ -50,7 +50,7 @@ server:
     {
       "log_level": "INFO",
       "telemetry": {
-        "prometheus_retention_time": "60s"
+        "prometheus_retention_time": "10m"
       }
     }
 
@@ -67,17 +67,16 @@ connectInject:
   enabled: true
   default: false     # opt-in via annotation: consul.hashicorp.com/connect-inject: "true"
 
-  # Envoy proxy metrics served at :20200/metrics via envoy_prometheus_bind_addr in ProxyDefaults.
-  # defaultEnableMerging is intentionally FALSE: HashiCups services do not expose a /metrics
-  # endpoint, so merging causes consul-dataplane to embed error text in the metrics output,
-  # breaking Prometheus parsing ("failed to scrape metrics at url...").
-  # Pure Envoy stats are still fully available via envoy_prometheus_bind_addr: 0.0.0.0:20200.
+  # Envoy proxy metrics served at :20200/stats/prometheus via the raw Envoy admin endpoint.
+  # defaultEnableMerging is intentionally FALSE: fake-service pods do not expose a /metrics
+  # endpoint, so merging would embed error text in the metrics output, breaking Prometheus parsing.
+  # Pure Envoy stats are scraped directly via /stats/prometheus (raw admin, no app merge).
   metrics:
     defaultEnabled: true
     defaultEnableMerging: false
     defaultMergedMetricsPort: 20100
     defaultPrometheusScrapePort: 20200
-    defaultPrometheusScrapePath: "/metrics"
+    defaultPrometheusScrapePath: "/stats/prometheus"
 
   # Transparent proxy — disabled for simplicity; using explicit upstream annotations
   transparentProxy:

@@ -105,6 +105,19 @@ data:
                 - source_labels: [__meta_kubernetes_pod_label_app]
                   target_label: service
 
+    # ── Connectors ──────────────────────────────────────────────────────────
+    # servicegraph: derives service-to-service topology metrics from traces.
+    # Emits traces_service_graph_request_total{client="web",server="api",...}
+    # scraped by Prometheus on :8889 → powers the node graph in Grafana.
+    connectors:
+      servicegraph:
+        latency_histogram_buckets: [1ms, 2ms, 6ms, 10ms, 100ms, 250ms, 500ms, 1000ms]
+        dimensions: []
+        store:
+          ttl: 10s
+          max_items: 1000
+        cache_loop: 1s
+
     processors:
       memory_limiter:
         check_interval: 5s
@@ -182,11 +195,11 @@ data:
         traces/app:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, attributes/mesh, batch]
-          exporters: [otlp/jaeger]
+          exporters: [otlp/jaeger, servicegraph]
         traces/proxy:
           receivers: [zipkin]
           processors: [memory_limiter, k8sattributes, attributes/mesh, attributes/envoy, batch]
-          exporters: [otlp/jaeger]
+          exporters: [otlp/jaeger, servicegraph]
         logs:
           receivers: [otlp]
           processors: [memory_limiter, k8sattributes, resource/loki_labels, batch]
@@ -195,6 +208,11 @@ data:
         metrics:
           receivers: [prometheus]
           processors: [memory_limiter, k8sattributes, batch]
+          exporters: [prometheus]
+        # Service graph topology metrics derived from traces — scraped via :8889
+        metrics/servicegraph:
+          receivers: [servicegraph]
+          processors: [memory_limiter, batch]
           exporters: [prometheus]
 ---
 apiVersion: apps/v1

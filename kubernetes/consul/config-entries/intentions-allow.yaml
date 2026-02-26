@@ -1,48 +1,22 @@
 # kubernetes/consul/config-entries/intentions-allow.yaml
-# ServiceIntentions — explicit allow list for the HashiCups service call graph.
+# ServiceIntentions for the fake-service topology.
 #
-# Default intention policy with ACLs enabled is deny-all.
-# HashiCups traffic flow:
-#   nginx → frontend
-#   nginx → public-api → product-api → product-api-db
-#   public-api → payments
+# With ACLs enabled, the default intention policy is deny-all.
+# Traffic flow:
+#   web → api → [payments, cache]   where   payments → currency
 #
 # Apply BEFORE deploying services or all traffic will be blocked.
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceIntentions
 metadata:
-  name: frontend
+  name: api
   namespace: default
 spec:
   destination:
-    name: frontend
+    name: api
   sources:
-    - name: nginx
-      action: allow
----
-apiVersion: consul.hashicorp.com/v1alpha1
-kind: ServiceIntentions
-metadata:
-  name: public-api
-  namespace: default
-spec:
-  destination:
-    name: public-api
-  sources:
-    - name: nginx
-      action: allow
----
-apiVersion: consul.hashicorp.com/v1alpha1
-kind: ServiceIntentions
-metadata:
-  name: product-api
-  namespace: default
-spec:
-  destination:
-    name: product-api
-  sources:
-    - name: public-api
+    - name: web
       action: allow
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
@@ -54,17 +28,29 @@ spec:
   destination:
     name: payments
   sources:
-    - name: public-api
+    - name: api
       action: allow
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceIntentions
 metadata:
-  name: product-api-db
+  name: cache
   namespace: default
 spec:
   destination:
-    name: product-api-db
+    name: cache
   sources:
-    - name: product-api
+    - name: api
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: currency
+  namespace: default
+spec:
+  destination:
+    name: currency
+  sources:
+    - name: payments
       action: allow

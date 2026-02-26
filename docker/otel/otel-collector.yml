@@ -37,6 +37,27 @@ receivers:
     resource:
       service.name: envoy-sidecar
       log.source: access-log
+      # Tell the OTel Loki exporter to promote these resource attributes
+      # as Loki stream labels (dots become underscores):
+      #   service.name → service_name="envoy-sidecar"
+      #   log.source   → log_source="access-log"
+      # Without this hint, resource attrs are stored as unindexed metadata
+      # and {service_name=...} label selectors match nothing.
+      loki.resource.labels: service.name, log.source
+
+# ── Connectors ────────────────────────────────────────────────────────────────
+# servicegraph: reads spans flowing through the traces pipelines and emits
+# traces_service_graph_request_total{client="web",server="api",...} Prometheus
+# metrics.  These power the "Service Dependency Map" node graph in Grafana and
+# work in BOTH Docker (single Envoy, no consul_* labels) and K8s (per-sidecar).
+connectors:
+  servicegraph:
+    latency_histogram_buckets: [1ms, 2ms, 6ms, 10ms, 100ms, 250ms, 500ms, 1000ms]
+    dimensions: []          # extra span attributes to promote as metric labels
+    store:
+      ttl: 10s              # how long to wait for the matching server span
+      max_items: 1000
+    cache_loop: 1s
 
 processors:
   memory_limiter:
@@ -74,8 +95,16 @@ exporters:
   loki:
     endpoint: http://loki:3100/loki/api/v1/push
     default_labels_enabled:
-      exporter: true
-      level: true
+      exporter: false   # don't add exporter=loki label — not useful for queries
+      job: false        # service.name is promoted via loki.resource.labels instead
+      instance: false
+      level: false      # Envoy access logs don't carry severity
+
+  # Exposes traces_service_graph_request_total (and siblings) on :8889
+  # so that Prometheus can scrape the full service-to-service topology.
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: ""         # no prefix — keep metric names as-is
 
   debug:
     verbosity: normal
@@ -87,18 +116,28 @@ service:
 
   pipelines:
     # App traces (OTLP from example-app and backend-api)
+    # → Jaeger for trace storage
+    # → servicegraph connector to derive topology metrics
     traces/app:
       receivers: [otlp]
       processors: [memory_limiter, attributes/mesh, batch]
-      exporters: [otlp/jaeger]
+      exporters: [otlp/jaeger, servicegraph]
 
     # Proxy traces (Zipkin from Envoy sidecar)
+    # → Jaeger for trace storage
+    # → servicegraph connector (catches direct fake-service calls via Zipkin too)
     traces/proxy:
       receivers: [zipkin]
       processors: [memory_limiter, attributes/mesh, attributes/envoy, batch]
-      exporters: [otlp/jaeger]
+      exporters: [otlp/jaeger, servicegraph]
 
     logs:
       receivers: [otlp, filelog]
       processors: [memory_limiter, batch]
       exporters: [loki, debug]
+
+    # Service graph metrics derived from traces — scraped by Prometheus on :8889
+    metrics/servicegraph:
+      receivers: [servicegraph]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

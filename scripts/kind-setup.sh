@@ -97,16 +97,22 @@ helm upgrade --install consul hashicorp/consul \
 # ── 6. Bootstrap ACL token (only on first install) ──────────────────────────
 info "ACL bootstrap token is in Secret 'consul-bootstrap-acl-token' (namespace: $CONSUL_NS)"
 
-# ── 7. Allow all service-to-service intentions ──────────────────────────────
-info "Creating Consul intentions (allow all)..."
-# Wait for Consul to be fully ready before applying intentions
+# ── 7. Apply Consul config entries (ProxyDefaults, ServiceDefaults, Intentions) ──
+info "Waiting for Consul server to be ready for CRD operations..."
 kubectl wait --for=condition=ready pod -l app=consul,component=server \
   -n "$CONSUL_NS" --timeout=120s || warn "Consul server may not be ready"
 
-# Apply allow-all intention via kubectl exec (no CRD needed for simple allow-all)
-kubectl exec -n "$CONSUL_NS" consul-server-0 -- \
-  consul intention create -allow '*' '*' 2>/dev/null \
-  || warn "Could not create intentions — they may already exist or ACLs need a token"
+info "Applying ProxyDefaults (Envoy metrics :20200 + Zipkin tracing + stdout access logs)..."
+kubectl apply -f "${REPO_ROOT}/kubernetes/consul/config-entries/proxy-defaults.yaml"
+
+info "Applying ServiceDefaults (protocol: http for fake-service topology)..."
+kubectl apply -f "${REPO_ROOT}/kubernetes/consul/config-entries/service-defaults-fake-service.yaml"
+
+info "Applying ServiceIntentions (web→api→[payments,cache]→currency allow-list)..."
+kubectl apply -f "${REPO_ROOT}/kubernetes/consul/config-entries/intentions-allow.yaml"
+
+info "Config entries applied — waiting 10s for Consul to sync CRDs to xDS..."
+sleep 10
 
 # ── 8. Deploy observability stack ────────────────────────────────────────────
 info "Deploying observability stack..."
@@ -150,38 +156,36 @@ for svc in currency cache payments api web; do
     || warn "${svc} did not become ready — check: kubectl logs -n ${DEMO_NS} -l app=${svc}"
 done
 
-# ── 10. Print endpoints ──────────────────────────────────────────────────────
+# ── 10. Print next steps ─────────────────────────────────────────────────────
 echo ""
-echo "═══════════════════════════════════════════════════════════"
-info "Setup complete! Run the following to access services:"
+echo "╔══════════════════════════════════════════════════════════════╗"
+info "K8s setup complete!"
+echo "╠══════════════════════════════════════════════════════════════╣"
 echo ""
-echo "  Fake-Service (web):  kubectl port-forward svc/web 9090:9090 -n $DEMO_NS"
-echo "  Consul UI:           kubectl port-forward svc/consul-ui 8500:80 -n $CONSUL_NS"
-echo "  Grafana:             kubectl port-forward svc/grafana 3000:3000 -n $OBS_NS"
-echo "  Jaeger UI:           kubectl port-forward svc/jaeger-query 16686:16686 -n $OBS_NS"
-echo "  Prometheus:          kubectl port-forward svc/prometheus 9090:9090 -n $OBS_NS"
+echo "  Next step — start port-forwards and open the UIs:"
 echo ""
-echo "  Or start all at once (background):"
-echo "    kubectl port-forward svc/web 9090:9090 -n $DEMO_NS &"
-echo "    kubectl port-forward svc/consul-ui 8500:80 -n $CONSUL_NS &"
-echo "    kubectl port-forward svc/grafana 3000:3000 -n $OBS_NS &"
-echo "    kubectl port-forward svc/jaeger-query 16686:16686 -n $OBS_NS &"
-echo "    kubectl port-forward svc/prometheus 9090:9090 -n $OBS_NS &"
+echo "    task k8s:open        # starts all port-forwards + prints URLs"
+echo "    task demo            # interactive fault-injection demo"
+echo "    task demo:open       # open Grafana + Jaeger + Consul in browser"
 echo ""
-echo "  App endpoints:"
-echo "    curl http://localhost:9090/       → full call chain (web→api→payments→currency + cache)"
-echo "    curl http://localhost:9090/ui     → fake-service topology UI"
+echo "  Manual port-forwards:"
+echo "    kubectl port-forward svc/web          9090:9090   -n $DEMO_NS  &"
+echo "    kubectl port-forward svc/consul-ui    8500:80     -n $CONSUL_NS &"
+echo "    kubectl port-forward svc/grafana      3000:3000   -n $OBS_NS   &"
+echo "    kubectl port-forward svc/jaeger-query 16686:16686 -n $OBS_NS   &"
+echo "    kubectl port-forward svc/prometheus   9091:9090   -n $OBS_NS   &"
 echo ""
-echo "  Observability:"
-echo "    Consul UI:    http://localhost:8500    (service health + topology)"
-echo "    Grafana:      http://localhost:3000    (admin / admin)"
-echo "      → Service-to-Service Traffic dashboard"
-echo "      → Consul Service Health dashboard"
-echo "      → Envoy Access Logs dashboard"
-echo "    Jaeger:       http://localhost:16686   (search service: web)"
-echo "    Prometheus:   http://localhost:9090"
+echo "  App:"
+echo "    curl http://localhost:9090/    → web→api→[payments,cache]→currency"
+echo ""
+echo "  Grafana dashboards (after port-forward):"
+echo "    http://localhost:3000/d/ffbs6tb0gr4lcb  Service Health (errors, latency, rps)"
+echo "    http://localhost:3000/d/service-to-service  Service-to-Service traffic"
+echo "    http://localhost:3000/d/consul-health       Consul cluster health"
+echo "    http://localhost:3000/d/envoy-access-logs   Envoy access logs (Loki)"
+echo "    Credentials: admin / admin"
 echo ""
 echo "  ACL bootstrap token:"
 echo "    kubectl get secret consul-bootstrap-acl-token -n $CONSUL_NS \\"
 echo "      -o jsonpath='{.data.token}' | base64 --decode && echo"
-echo "═══════════════════════════════════════════════════════════"
+echo "╚══════════════════════════════════════════════════════════════╝"

@@ -44,6 +44,11 @@ services:
       - LISTEN_ADDR=0.0.0.0:9090
       - TRACING_ZIPKIN=http://otel-collector:9411
       - LOG_FORMAT=json
+      # ── Fault injection — override via docker/.env or `docker compose up currency` ──
+      - ERROR_RATE=${CURRENCY_ERROR_RATE:-0}
+      - TIMING_50_PERCENTILE=${CURRENCY_LATENCY_P50:-1ms}
+      - TIMING_90_PERCENTILE=${CURRENCY_LATENCY_P90:-1ms}
+      - TIMING_99_PERCENTILE=${CURRENCY_LATENCY_P99:-1ms}
     networks:
       - consul-mesh
     depends_on:
@@ -62,6 +67,11 @@ services:
       - LISTEN_ADDR=0.0.0.0:9090
       - TRACING_ZIPKIN=http://otel-collector:9411
       - LOG_FORMAT=json
+      # ── Fault injection ──
+      - ERROR_RATE=${CACHE_ERROR_RATE:-0}
+      - TIMING_50_PERCENTILE=${CACHE_LATENCY_P50:-1ms}
+      - TIMING_90_PERCENTILE=${CACHE_LATENCY_P90:-1ms}
+      - TIMING_99_PERCENTILE=${CACHE_LATENCY_P99:-1ms}
     networks:
       - consul-mesh
     depends_on:
@@ -81,6 +91,11 @@ services:
       - UPSTREAM_URIS=http://currency:9090
       - TRACING_ZIPKIN=http://otel-collector:9411
       - LOG_FORMAT=json
+      # ── Fault injection ──
+      - ERROR_RATE=${PAYMENTS_ERROR_RATE:-0}
+      - TIMING_50_PERCENTILE=${PAYMENTS_LATENCY_P50:-1ms}
+      - TIMING_90_PERCENTILE=${PAYMENTS_LATENCY_P90:-1ms}
+      - TIMING_99_PERCENTILE=${PAYMENTS_LATENCY_P99:-1ms}
     networks:
       - consul-mesh
     depends_on:
@@ -103,6 +118,11 @@ services:
       - UPSTREAM_WORKERS=2
       - TRACING_ZIPKIN=http://otel-collector:9411
       - LOG_FORMAT=json
+      # ── Fault injection ──
+      - ERROR_RATE=${API_ERROR_RATE:-0}
+      - TIMING_50_PERCENTILE=${API_LATENCY_P50:-1ms}
+      - TIMING_90_PERCENTILE=${API_LATENCY_P90:-1ms}
+      - TIMING_99_PERCENTILE=${API_LATENCY_P99:-1ms}
     networks:
       - consul-mesh
     depends_on:
@@ -126,6 +146,11 @@ services:
       - UPSTREAM_URIS=http://api:9090
       - TRACING_ZIPKIN=http://otel-collector:9411
       - LOG_FORMAT=json
+      # ── Fault injection ──
+      - ERROR_RATE=${WEB_ERROR_RATE:-0}
+      - TIMING_50_PERCENTILE=${WEB_LATENCY_P50:-1ms}
+      - TIMING_90_PERCENTILE=${WEB_LATENCY_P90:-1ms}
+      - TIMING_99_PERCENTILE=${WEB_LATENCY_P99:-1ms}
     networks:
       - consul-mesh
     depends_on:
@@ -223,6 +248,7 @@ services:
       - "4318:4318"   # OTLP HTTP
       - "9411:9411"   # Zipkin (from fake-service + Envoy)
       - "8888:8888"   # OTel self-metrics
+      - "8889:8889"   # Service graph metrics (traces_service_graph_request_total)
     volumes:
       - ./otel/otel-collector.yml:/etc/otel/config.yml:ro
       - envoy-logs:/var/log/envoy

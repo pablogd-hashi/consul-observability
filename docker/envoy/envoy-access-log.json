@@ -151,6 +151,18 @@
       {
         "tag_name": "service",
         "fixed_value": "web"
+      },
+      {
+        "tag_name": "local_cluster",
+        "fixed_value": "web"
+      },
+      {
+        "tag_name": "consul_destination_service",
+        "fixed_value": "web"
+      },
+      {
+        "tag_name": "consul_source_service",
+        "fixed_value": "external"
       }
     ]
   }

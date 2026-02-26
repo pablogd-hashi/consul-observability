@@ -1,7 +1,7 @@
 {
   "title": "Envoy Access Logs",
   "uid": "envoy-access-logs",
-  "description": "Envoy proxy access logs from Loki. Includes request rate, error counts, and live log stream with trace correlation.",
+  "description": "Envoy proxy access logs from Loki. Stream: {service_name=\"envoy-sidecar\"}. Click any log line's traceparent to jump to the trace in Jaeger.",
   "tags": ["envoy", "logs", "loki"],
   "timezone": "browser",
   "schemaVersion": 38,
@@ -11,7 +11,7 @@
     "list": [
       {
         "name": "status_filter",
-        "label": "Status Code",
+        "label": "Status Class",
         "type": "custom",
         "query": "All,2xx,4xx,5xx",
         "current": { "value": "All", "text": "All" },
@@ -30,29 +30,22 @@
     {
       "id": 1,
       "title": "Total Requests",
+      "description": "Total log lines ingested from Envoy access log in the selected time window",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "datasource": { "type": "loki", "uid": "loki" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
+          "thresholds": { "steps": [ { "color": "green", "value": null } ] },
           "unit": "short"
         }
       },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "reduceOptions": { "calcs": ["sum"] }
-      },
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["sum"] } },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "count_over_time({service_name=\"envoy-sidecar\", log_source=\"access-log\"} [5m])",
+          "expr": "count_over_time({service_name=\"envoy-sidecar\",log_source=\"access-log\"}[$__range])",
           "legendFormat": "requests",
           "refId": "A"
         }
@@ -61,6 +54,7 @@
     {
       "id": 2,
       "title": "5xx Errors",
+      "description": "Requests where Envoy's upstream returned HTTP 5xx",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "datasource": { "type": "loki", "uid": "loki" },
@@ -76,15 +70,11 @@
           "unit": "short"
         }
       },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "reduceOptions": { "calcs": ["sum"] }
-      },
+      "options": { "colorMode": "background", "graphMode": "area", "reduceOptions": { "calcs": ["sum"] } },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "count_over_time({service_name=\"envoy-sidecar\", log_source=\"access-log\"} | json | http_status_code >= 500 [5m])",
+          "expr": "count_over_time({service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | response_code >= 500[$__range])",
           "legendFormat": "5xx",
           "refId": "A"
         }
@@ -93,6 +83,7 @@
     {
       "id": 3,
       "title": "Avg Response Time",
+      "description": "Average upstream response time (Envoy %DURATION% field = ms)",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
       "datasource": { "type": "loki", "uid": "loki" },
@@ -109,15 +100,11 @@
           "unit": "ms"
         }
       },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["mean"] } },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "avg_over_time({service_name=\"envoy-sidecar\", log_source=\"access-log\"} | json | unwrap http_duration_ms [5m])",
+          "expr": "avg_over_time({service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | unwrap duration [$__range])",
           "legendFormat": "avg ms",
           "refId": "A"
         }
@@ -126,29 +113,22 @@
     {
       "id": 4,
       "title": "Unique Upstreams",
+      "description": "Number of distinct upstream hosts seen in access logs",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
       "datasource": { "type": "loki", "uid": "loki" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
+          "thresholds": { "steps": [ { "color": "green", "value": null } ] },
           "unit": "short"
         }
       },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "reduceOptions": { "calcs": ["lastNotNull"] }
-      },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "count(count by (net_peer_name) ({service_name=\"envoy-sidecar\", log_source=\"access-log\"} | json | __error__=\"\"))",
+          "expr": "count(count by (upstream_host) ({service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | __error__=\"\"))",
           "legendFormat": "hosts",
           "refId": "A"
         }
@@ -156,7 +136,8 @@
     },
     {
       "id": 5,
-      "title": "Request Rate by Status",
+      "title": "Request Rate by Status Class",
+      "description": "Envoy access log lines/s grouped by HTTP status class. response_code field from Envoy's JSON log format.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 24, "x": 0, "y": 4 },
       "datasource": { "type": "loki", "uid": "loki" },
@@ -165,6 +146,50 @@
           "unit": "reqps",
           "color": { "mode": "palette-classic" },
           "custom": { "fillOpacity": 10, "lineWidth": 2 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "5xx" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "2xx" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "4xx" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } } ] }
+        ]
+      },
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "right" },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(rate({service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | response_code >= 200 | response_code < 300 [1m]))",
+          "legendFormat": "2xx",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(rate({service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | response_code >= 400 | response_code < 500 [1m]))",
+          "legendFormat": "4xx",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(rate({service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | response_code >= 500 [1m]))",
+          "legendFormat": "5xx",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Response Time Distribution",
+      "description": "P50 / P95 / P99 latency from Envoy's %DURATION% field (ms). Uses Loki's quantile_over_time function.",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 12 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 5, "lineWidth": 2 }
         }
       },
       "options": {
@@ -174,42 +199,43 @@
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "sum(rate({service_name=\"envoy-sidecar\", log_source=\"access-log\"} | json | http_status_code >= 200, http_status_code < 300 [1m]))",
-          "legendFormat": "2xx",
+          "expr": "quantile_over_time(0.50, {service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | unwrap duration [1m])",
+          "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "sum(rate({service_name=\"envoy-sidecar\", log_source=\"access-log\"} | json | http_status_code >= 400, http_status_code < 500 [1m]))",
-          "legendFormat": "4xx",
+          "expr": "quantile_over_time(0.95, {service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | unwrap duration [1m])",
+          "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "sum(rate({service_name=\"envoy-sidecar\", log_source=\"access-log\"} | json | http_status_code >= 500 [1m]))",
-          "legendFormat": "5xx",
+          "expr": "quantile_over_time(0.99, {service_name=\"envoy-sidecar\",log_source=\"access-log\"} | json | unwrap duration [1m])",
+          "legendFormat": "p99",
           "refId": "C"
         }
       ]
     },
     {
-      "id": 6,
+      "id": 7,
       "title": "Access Log Stream",
-      "description": "Live Envoy access logs. Each entry includes method, path, status code, duration, upstream host, and traceparent for Jaeger correlation.",
+      "description": "Live Envoy access logs. Each line is the raw JSON from Envoy: method, path, response_code, duration (ms), upstream_host, traceparent. Click a log line's traceparent link (🔗) to jump directly to that trace in Jaeger.",
       "type": "logs",
-      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 12 },
+      "gridPos": { "h": 16, "w": 24, "x": 0, "y": 20 },
       "datasource": { "type": "loki", "uid": "loki" },
       "options": {
         "showTime": true,
         "sortOrder": "Descending",
         "wrapLogMessage": false,
         "prettifyLogMessage": true,
-        "enableLogDetails": true
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
       },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{service_name=\"envoy-sidecar\", log_source=\"access-log\"}",
+          "expr": "{service_name=\"envoy-sidecar\",log_source=\"access-log\"}",
           "refId": "A"
         }
       ]

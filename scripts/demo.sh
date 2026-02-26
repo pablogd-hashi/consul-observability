@@ -1,580 +1,573 @@
 #!/usr/bin/env bash
 # scripts/demo.sh
 # ─────────────────────────────────────────────────────────────────────────────
-# Interactive guided demo of Consul service-mesh observability.
+# Interactive fault-injection demo for the Consul observability stack.
 #
-# Chapters:
-#   0  Pre-flight   — validate the stack is healthy before starting
-#   1  The Mesh     — show the live service topology in Consul UI
-#   2  Metrics      — Grafana Data Plane Health & Performance dashboards
-#   3  Traffic      — generate load, watch Grafana update in real time
-#   4  Traces       — distributed trace walkthrough in Jaeger
-#   5  Logs         — Envoy access logs in Loki, trace_id correlation
-#   6  Fault        — inject product-api failure, watch 5xx spike everywhere
-#   7  Recovery     — restore the service, watch the mesh self-heal
+# Service topology:  web → api → [payments (→ currency), cache]
 #
-# Usage:
-#   ./scripts/demo.sh                  # start from Chapter 0
-#   ./scripts/demo.sh --chapter 3      # jump to a specific chapter
-#   ./scripts/demo.sh --no-browser     # skip auto-open of browser URLs
+# Usage (interactive):
+#   ./scripts/demo.sh
+#
+# Usage (non-interactive — from Taskfile):
+#   ./scripts/demo.sh --inject-errors  <service> <rate>     # 0.0–1.0
+#   ./scripts/demo.sh --inject-latency <service> <latency>  # e.g. 500ms
+#   ./scripts/demo.sh --reset
+#   ./scripts/demo.sh --open
+#
+# Mode is auto-detected:
+#   Docker  — docker compose running in ./docker/
+#   K8s     — kubectl can reach a cluster with fake-service pods
+#   Override with: DEMO_MODE=docker  or  DEMO_MODE=k8s
+# ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-CONSUL_NS="consul"
-OBS_NS="observability"
-DEMO_NS="default"
-BASE_URL="${BASE_URL:-http://localhost:8080}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DOCKER_DIR="$REPO_ROOT/docker"
+DOCKER_ENV="$DOCKER_DIR/.env"
+
+SERVICES=(web api payments cache currency)
+
+# ── Grafana dashboard UIDs ────────────────────────────────────────────────────
 GRAFANA="${GRAFANA_URL:-http://localhost:3000}"
+CONSUL_UI="${CONSUL_URL:-http://localhost:8500}"
 JAEGER="${JAEGER_URL:-http://localhost:16686}"
 PROM="${PROM_URL:-http://localhost:9090}"
-CONSUL_UI="${CONSUL_URL:-http://localhost:8500}"
 
-CHAPTER="${2:-0}"
-NO_BROWSER=false
+UID_SERVICE_HEALTH="ffbs6tb0gr4lcb"
+UID_SERVICE_TO_SERVICE="service-to-service"
+UID_LOGS="envoy-access-logs"
 
-for arg in "$@"; do
-  case $arg in
-    --no-browser) NO_BROWSER=true ;;
-    --chapter)    CHAPTER="${2:-0}" ;;
-  esac
-done
-
-# ── Colours & formatting ──────────────────────────────────────────────────────
+# ── Colours ───────────────────────────────────────────────────────────────────
 BOLD='\033[1m';    RESET='\033[0m'
 GREEN='\033[0;32m'; CYAN='\033[0;36m'; YELLOW='\033[1;33m'
-RED='\033[0;31m';   BLUE='\033[0;34m'; MAGENTA='\033[0;35m'
-DIM='\033[2m'
+RED='\033[0;31m';   BLUE='\033[0;34m'; DIM='\033[2m'; MAGENTA='\033[0;35m'
 
-DEMO_PASS=0
-DEMO_FAIL=0
+info()  { echo -e "  ${GREEN}✓${RESET} $*"; }
+warn()  { echo -e "  ${YELLOW}⚠${RESET} $*"; }
+step()  { echo -e "  ${CYAN}▶${RESET} $*"; }
+link()  { echo -e "  ${BLUE}🔗${RESET} ${BOLD}$1${RESET}"; }
+note()  { echo -e "  ${DIM}$*${RESET}"; }
+ruler() { echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"; }
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-chapter() {
-  local num=$1; local title=$2; local color=$3
-  echo ""
-  echo -e "${color}${BOLD}╔══════════════════════════════════════════════╗${RESET}"
-  printf "${color}${BOLD}║  Chapter %-2s: %-32s║${RESET}\n" "$num" "$title"
-  echo -e "${color}${BOLD}╚══════════════════════════════════════════════╝${RESET}"
-  echo ""
-}
-
-step() { echo -e "  ${CYAN}▶${RESET} $*"; }
-info() { echo -e "  ${GREEN}✓${RESET} $*"; }
-warn() { echo -e "  ${YELLOW}⚠${RESET} $*"; }
-fail() { echo -e "  ${RED}✗${RESET} $*"; }
-note() { echo -e "  ${DIM}$*${RESET}"; }
-link() { echo -e "  ${BLUE}🔗 ${BOLD}$1${RESET}  ${DIM}$2${RESET}"; }
-query(){ echo -e "  ${MAGENTA}⌕  Query:${RESET}  ${BOLD}$*${RESET}"; }
-
-pause() {
-  local msg="${1:-Press ENTER to continue...}"
-  echo ""
-  echo -e "  ${DIM}────────────────────────────────────────────${RESET}"
-  echo -en "  ${YELLOW}▶  $msg${RESET} "
-  read -r
-}
-
-open_url() {
-  if [[ "$NO_BROWSER" == "false" ]]; then
-    if command -v open &>/dev/null; then
-      open "$1" 2>/dev/null || true
-    elif command -v xdg-open &>/dev/null; then
-      xdg-open "$1" 2>/dev/null || true
-    fi
+# ── Mode detection ────────────────────────────────────────────────────────────
+detect_mode() {
+  if [[ -n "${DEMO_MODE:-}" ]]; then
+    echo "$DEMO_MODE"
+    return
   fi
-}
-
-kubectl_exec_prom() {
-  # Run a command inside the Prometheus pod
-  local pod
-  pod=$(kubectl get pod -n "$OBS_NS" -l app=prometheus \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-  [[ -z "$pod" ]] && return 1
-  kubectl exec -n "$OBS_NS" "$pod" -- "$@" 2>/dev/null
-}
-
-# ── Background traffic worker ─────────────────────────────────────────────────
-TRAFFIC_PID=""
-
-start_traffic() {
-  local duration="${1:-999999}"
-  (
-    local end=$(($(date +%s) + duration))
-    local endpoints=("/" "/api" "/api/coffees" "/api/ingredients/1" "/api/ingredients/2")
-    while [[ $(date +%s) -lt $end ]]; do
-      for ep in "${endpoints[@]}"; do
-        curl -sf --max-time 3 --connect-timeout 2 "${BASE_URL}${ep}" \
-          -o /dev/null 2>/dev/null || true
-      done
-      sleep 0.4
-    done
-  ) &
-  TRAFFIC_PID=$!
-}
-
-stop_traffic() {
-  if [[ -n "$TRAFFIC_PID" ]]; then
-    kill "$TRAFFIC_PID" 2>/dev/null || true
-    wait "$TRAFFIC_PID" 2>/dev/null || true
-    TRAFFIC_PID=""
+  if docker compose -f "$DOCKER_DIR/docker-compose.yml" ps --status running \
+      --format json 2>/dev/null | grep -q '"web"'; then
+    echo "docker"
+    return
   fi
-}
-
-# ── Cleanup on exit ───────────────────────────────────────────────────────────
-cleanup() {
-  stop_traffic
-  # Ensure product-api is restored if demo was interrupted mid-fault
-  local replicas
-  replicas=$(kubectl get deployment product-api -n "$DEMO_NS" \
-    -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "1")
-  if [[ "$replicas" == "0" ]]; then
-    echo ""
-    warn "Restoring product-api (was scaled to 0 during fault injection)..."
-    kubectl scale deployment product-api -n "$DEMO_NS" --replicas=1 2>/dev/null || true
+  if kubectl get pods -n default -l 'app in (web,api)' \
+      --no-headers 2>/dev/null | grep -q Running; then
+    echo "k8s"
+    return
   fi
+  echo "unknown"
 }
-trap cleanup EXIT INT TERM
 
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 0: Pre-flight
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 0 "Pre-flight Check" "$GREEN"
-
-echo "  Verifying the observability stack before we start the demo."
-echo ""
-
-# Check kubectl is connected
-if ! kubectl cluster-info &>/dev/null; then
-  fail "kubectl cannot reach the cluster. Run 'task k8s-setup' first."
-  exit 1
-fi
-info "kubectl connected to cluster"
-
-# Check all HashiCups pods
-READY_COUNT=0
-for svc in nginx frontend public-api product-api product-api-db payments; do
-  READY=$(kubectl get pods -n "$DEMO_NS" -l "app=$svc" \
-    -o jsonpath='{.items[0].status.containerStatuses[*].ready}' 2>/dev/null || echo "")
-  if echo "$READY" | grep -q "true"; then
-    READY_COUNT=$((READY_COUNT + 1))
+# ── Fault injection — Docker ──────────────────────────────────────────────────
+docker_set_env() {
+  local service="$1"; local key="$2"; local val="$3"
+  local prefix; prefix="${service^^}"
+  local env_key="${prefix}_${key}"
+  if grep -q "^${env_key}=" "$DOCKER_ENV" 2>/dev/null; then
+    sed -i.bak "s|^${env_key}=.*|${env_key}=${val}|" "$DOCKER_ENV" && rm -f "${DOCKER_ENV}.bak"
   else
-    warn "$svc not ready yet"
+    echo "${env_key}=${val}" >> "$DOCKER_ENV"
   fi
-done
-info "$READY_COUNT/6 HashiCups services ready"
+}
 
-# Check observability pods
-OBS_COUNT=0
-for dep in loki otel-collector prometheus jaeger grafana; do
-  R=$(kubectl get deployment "$dep" -n "$OBS_NS" \
-    -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-  [[ "${R:-0}" -ge 1 ]] && OBS_COUNT=$((OBS_COUNT + 1))
-done
-info "$OBS_COUNT/5 observability services ready"
+docker_inject_errors() {
+  local service="$1"; local rate="$2"
+  docker_set_env "$service" "ERROR_RATE" "$rate"
+  step "Restarting $service with ERROR_RATE=$rate ..."
+  docker compose -f "$DOCKER_DIR/docker-compose.yml" \
+    --env-file "$DOCKER_ENV" up -d --force-recreate "$service"
+  info "$service restarting — will return ~$(printf '%.0f' "$(echo "$rate * 100" | bc -l)")% HTTP 500"
+}
 
-# Check the app is reachable
-if curl -sf --max-time 5 --connect-timeout 3 "${BASE_URL}/" -o /dev/null 2>/dev/null; then
-  info "HashiCups UI reachable at $BASE_URL"
-else
-  warn "HashiCups UI not reachable at $BASE_URL"
+docker_inject_latency() {
+  local service="$1"; local latency="$2"
+  docker_set_env "$service" "LATENCY_P50" "$latency"
+  docker_set_env "$service" "LATENCY_P90" "$latency"
+  docker_set_env "$service" "LATENCY_P99" "$latency"
+  step "Restarting $service with latency=${latency} ..."
+  docker compose -f "$DOCKER_DIR/docker-compose.yml" \
+    --env-file "$DOCKER_ENV" up -d --force-recreate "$service"
+  info "$service restarting — will add ${latency} to every response"
+}
+
+docker_reset() {
+  step "Resetting all fault injection ..."
+  # Copy .env.example → .env for a guaranteed clean baseline (avoids stale values)
+  cp "$DOCKER_DIR/.env.example" "$DOCKER_ENV"
+  step "Restarting fake-service containers ..."
+  docker compose -f "$DOCKER_DIR/docker-compose.yml" \
+    --env-file "$DOCKER_ENV" up -d --force-recreate \
+    web api payments cache currency
+  info "All services reset to 0% errors / 1ms latency"
+}
+
+docker_status() {
   echo ""
-  note "  You may need to port-forward first:"
-  note "    kubectl port-forward svc/nginx 8080:80 -n $DEMO_NS &"
-  note "    kubectl port-forward svc/consul-ui 8500:80 -n $CONSUL_NS &"
-  note "    kubectl port-forward svc/grafana 3000:3000 -n $OBS_NS &"
-  note "    kubectl port-forward svc/jaeger-query 16686:16686 -n $OBS_NS &"
-  note "    kubectl port-forward svc/prometheus 9090:9090 -n $OBS_NS &"
+  echo -e "  ${BOLD}Current fault injection${RESET}"
+  echo ""
+  for svc in "${SERVICES[@]}"; do
+    local prefix="${svc^^}"
+    local err; err=$(grep "^${prefix}_ERROR_RATE=" "$DOCKER_ENV" 2>/dev/null | cut -d= -f2 || echo "0")
+    local lat; lat=$(grep "^${prefix}_LATENCY_P50=" "$DOCKER_ENV" 2>/dev/null | cut -d= -f2 || echo "1ms")
+    if [[ "$err" != "0" ]] || [[ "$lat" != "1ms" ]]; then
+      printf "  ${RED}%-12s${RESET}  error_rate=%-6s  p50_latency=%s  ${YELLOW}← FAULT${RESET}\n" "$svc" "$err" "$lat"
+    else
+      printf "  ${GREEN}%-12s${RESET}  error_rate=%-6s  p50_latency=%s\n" "$svc" "$err" "$lat"
+    fi
+  done
+  echo ""
+}
+
+# ── Fault injection — Kubernetes ──────────────────────────────────────────────
+k8s_inject_errors() {
+  local service="$1"; local rate="$2"
+  step "Setting ERROR_RATE=$rate on deployment/$service ..."
+  kubectl set env "deployment/$service" "ERROR_RATE=$rate" -n default
+  info "$service updated (pod rolling restart in progress)"
+}
+
+k8s_inject_latency() {
+  local service="$1"; local latency="$2"
+  step "Setting TIMING latency=$latency on deployment/$service ..."
+  kubectl set env "deployment/$service" \
+    "TIMING_50_PERCENTILE=$latency" \
+    "TIMING_90_PERCENTILE=$latency" \
+    "TIMING_99_PERCENTILE=$latency" -n default
+  info "$service updated (pod rolling restart in progress)"
+}
+
+k8s_reset() {
+  step "Resetting all fake-service deployments ..."
+  for svc in "${SERVICES[@]}"; do
+    kubectl set env "deployment/$svc" \
+      "ERROR_RATE=0" \
+      "TIMING_50_PERCENTILE=1ms" \
+      "TIMING_90_PERCENTILE=1ms" \
+      "TIMING_99_PERCENTILE=1ms" -n default 2>/dev/null || true
+  done
+  info "Reset sent — run: kubectl rollout status deployment/web -n default"
+}
+
+k8s_status() {
+  echo ""
+  echo -e "  ${BOLD}Current fault injection${RESET}"
+  echo ""
+  for svc in "${SERVICES[@]}"; do
+    local err; err=$(kubectl get deployment "$svc" -n default \
+      -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ERROR_RATE")].value}' 2>/dev/null || echo "0")
+    local lat; lat=$(kubectl get deployment "$svc" -n default \
+      -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TIMING_50_PERCENTILE")].value}' 2>/dev/null || echo "1ms")
+    err="${err:-0}"; lat="${lat:-1ms}"
+    if [[ "$err" != "0" ]] || [[ "$lat" != "1ms" ]]; then
+      printf "  ${RED}%-12s${RESET}  error_rate=%-6s  p50_latency=%s  ${YELLOW}← FAULT${RESET}\n" "$svc" "$err" "$lat"
+    else
+      printf "  ${GREEN}%-12s${RESET}  error_rate=%-6s  p50_latency=%s\n" "$svc" "$err" "$lat"
+    fi
+  done
+  echo ""
+}
+
+# ── Browser opener ────────────────────────────────────────────────────────────
+open_url() {
+  if command -v open &>/dev/null; then
+    open "$1" 2>/dev/null || true
+  elif command -v xdg-open &>/dev/null; then
+    xdg-open "$1" 2>/dev/null || true
+  fi
+}
+
+print_urls() {
+  local mode="$1"
+  echo ""
+  echo -e "  ${BOLD}Observability URLs${RESET}"
+  echo ""
+  link "$GRAFANA/d/${UID_SERVICE_HEALTH}     → Service Health  (error rate, P95 latency, RPS)"
+  link "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}  → Service Map     (node graph + trace waterfall)"
+  link "$GRAFANA/d/${UID_LOGS}                → Access Logs     (Loki stream + Jaeger links)"
+  link "$JAEGER/search?service=web            → Jaeger          (distributed traces)"
+  link "$CONSUL_UI/ui/dc1/services            → Consul UI       (service topology + intentions)"
+  link "$PROM/graph                           → Prometheus      (raw metric explorer)"
+  if [[ "$mode" == "docker" ]]; then
+    echo ""
+    note "  App: curl http://localhost:21000/   (routed through Envoy)"
+  else
+    echo ""
+    note "  App: curl http://localhost:9090/    (run: task k8s:open first)"
+  fi
+  echo ""
+}
+
+open_all() {
+  step "Opening dashboards in browser..."
+  open_url "$GRAFANA/d/${UID_SERVICE_HEALTH}"
+  sleep 0.4
+  open_url "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}"
+  sleep 0.4
+  open_url "$JAEGER/search?service=web"
+  sleep 0.4
+  open_url "$CONSUL_UI/ui/dc1/services"
+  info "Opened: Grafana Service Health, Service-to-Service, Jaeger, Consul UI"
+}
+
+# ── Narrative explanations ────────────────────────────────────────────────────
+explain_errors() {
+  local service="$1"; local rate="$2"
+  local pct; pct=$(printf '%.0f' "$(echo "$rate * 100" | bc -l)")
+  ruler
+  echo ""
+  echo -e "  ${BOLD}How error injection works${RESET}"
+  echo ""
+  echo -e "  fake-service reads ${CYAN}ERROR_RATE=${rate}${RESET} and randomly fails ${BOLD}${pct}%${RESET} of"
+  echo "  incoming requests with HTTP 500. The decision is made independently"
+  echo "  for each request — there's no batching or pattern."
+  echo ""
+  echo -e "  ${BOLD}Grafana — where to look${RESET}"
+  echo ""
+  echo "  Service Health dashboard:"
+  echo "    → 'Services with High Error Rate' panel"
+  echo "       $service appears highlighted (threshold: > 1% error rate)"
+  echo "    → Error rate formula:  5xx responses ÷ total responses ≈ ${rate}"
+  echo ""
+  echo "  Service-to-Service Traffic dashboard:"
+  echo "    → \"Error Rate (%)\" stat card turns red"
+  echo "    → \"Request Rate by Status Class\" chart: new 5xx line appears"
+  echo ""
+  echo -e "  ${BOLD}Jaeger — tracing a failed request${RESET}"
+  echo ""
+  echo "  1. Open Jaeger → Service: web → Tags: error=true → Find Traces"
+  echo "  2. Click a trace — the waterfall shows where the error began:"
+  echo ""
+  echo "       web    [══════════════════════════════] ✗ 500"
+  echo "        └─ api  [═══════════════════════] ✗ 500"
+  echo "              └─ $service [══════════] ✗ 500  ← root cause"
+  echo ""
+  echo "  3. Click the $service span → Detail panel shows http.status_code=500"
+  echo "  4. Errors propagate up — api and web also fail because there"
+  echo "     are no retries configured (raw pass-through behaviour)"
+  echo "  5. Compare a failing trace vs a passing one side by side:"
+  echo "     failing spans appear red, successful spans appear green"
+  echo ""
+  echo -e "  ${BOLD}Prometheus — raw query to verify${RESET}"
+  echo "  rate(envoy_cluster_upstream_rq_xx{envoy_response_code_class=\\"5\\"}[1m])"
+  echo ""
+  ruler
+  echo ""
+}
+
+explain_latency() {
+  local service="$1"; local latency="$2"
+  ruler
+  echo ""
+  echo -e "  ${BOLD}How latency injection works${RESET}"
+  echo ""
+  echo -e "  fake-service reads ${CYAN}TIMING_50_PERCENTILE=${latency}${RESET} (and P90, P99 set"
+  echo "  to the same value) and sleeps for a random duration sampled from"
+  echo "  a distribution that satisfies those percentile constraints."
+  echo "  With P50=P90=P99=${latency}, essentially ALL requests wait ~${latency}."
+  echo ""
+  echo -e "  ${BOLD}What percentiles actually mean${RESET}"
+  echo ""
+  echo "  Percentiles describe the DISTRIBUTION of response times, not"
+  echo "  just the average. The same total latency can look very different:"
+  echo ""
+  echo "   Metric  │ Meaning                         │ Example"
+  echo "  ─────────┼─────────────────────────────────┼───────────────"
+  echo "   P50     │ 50% of requests are faster      │ median = 1ms"
+  echo "   P90     │ 90% of requests are faster      │ 1 in 10 is slow"
+  echo "   P95     │ 95% of requests are faster      │ 1 in 20 is slow"
+  echo "   P99     │ 99% of requests are faster      │ 1 in 100 is slow"
+  echo "   P99.9   │ 999 in 1000 are faster          │ tail latency"
+  echo ""
+  echo "   Note: Why not just use averages?"
+  echo "      99 requests take 1ms + 1 request takes 1s → average = 11ms"
+  echo "      The average 'looks fine' but your P99 = 1s."
+  echo "      1% of users wait a full second. Averages hide tail latency."
+  echo ""
+  echo -e "  ${BOLD}Grafana — where to look${RESET}"
+  echo ""
+  echo "  Service-to-Service Traffic dashboard:"
+  echo "    → \"Response Time (P50 / P95 / P99)\" time series"
+  echo "       All three lines rise. P99 may lag briefly while Envoy's"
+  echo "       histogram buckets accumulate new observations."
+  echo "    → \"P99 Latency (ms)\" stat card turns yellow then red"
+  echo ""
+  echo "  Envoy Access Logs dashboard:"
+  echo "    → \"Response Time Distribution\" panel (P50/P95/P99 from Loki)"
+  echo "       This uses Loki's quantile_over_time() on the 'duration' field"
+  echo "       from Envoy's JSON access log — independent of Prometheus!"
+  echo "       Both should show the same ${latency} baseline."
+  echo ""
+  echo -e "  ${BOLD}Jaeger — reading latency in traces${RESET}"
+  echo ""
+  echo "  1. Open Jaeger → Service: web → Find Traces"
+  echo "  2. In the trace list, look at the 'Duration' column (far right)"
+  echo "     Traces with $service latency show longer total duration"
+  echo "  3. Click a trace → the waterfall:"
+  echo ""
+  echo "       web    [═══════════════════════════════════] ${latency}"
+  echo "        └─ api  [══════════════════════════] ${latency}"
+  echo "              └─ $service  [══════════] ← wider span = sleep"
+  echo ""
+  echo "  4. Hover a span → 'Duration' in the tooltip shows time in that span"
+  echo "  5. The $service span is wider than its parent's other children"
+  echo "     (payments vs cache, for example) if only one service is affected"
+  echo ""
+  echo -e "  ${BOLD}Prometheus — raw query${RESET}"
+  echo "  histogram_quantile(0.99, sum(rate(envoy_cluster_upstream_rq_time_bucket[5m])) by (le))"
+  echo ""
+  ruler
+  echo ""
+}
+
+explain_burst() {
+  ruler
+  echo ""
+  echo -e "  ${BOLD}What just happened — traffic burst${RESET}"
+  echo ""
+  echo "  Sent ~3 req/s for 30s through the Envoy proxy, on top of the"
+  echo "  background load generator (~1.5 req/s). Total ≈ 4.5 req/s peak."
+  echo ""
+  echo -e "  ${BOLD}Grafana — where to look${RESET}"
+  echo ""
+  echo "  Service Health dashboard:"
+  echo "    → \"Request Volume\" panel: spike visible in the time series"
+  echo "    → Error rate stays at baseline (if no faults injected)"
+  echo ""
+  echo "  Service-to-Service Traffic dashboard:"
+  echo "    → \"Request Rate (RPS)\" stat card: value rises during burst"
+  echo "    → Request Rate by Status Class: 2xx spike in the chart"
+  echo ""
+  echo -e "  ${BOLD}Jaeger — correlating a burst${RESET}"
+  echo ""
+  echo "  1. Set Jaeger time range to 'Last 5 minutes'"
+  echo "  2. Find Traces — more traces packed into the burst window"
+  echo "  3. Traces should still succeed (short durations, green bars)"
+  echo "  4. If you also have latency injected, burst traces show longer"
+  echo "     durations — you're now generating both volume AND tail latency"
+  echo ""
+  ruler
+  echo ""
+}
+
+explain_reset() {
+  ruler
+  echo ""
+  echo -e "  ${BOLD}What just happened — reset${RESET}"
+  echo ""
+  echo "  All services restored to baseline:"
+  echo "    ERROR_RATE = 0       → no artificial errors"
+  echo "    TIMING_P50 = 1ms     → effectively zero added latency"
+  echo ""
+  echo "  Grafana panels return to baseline within ~15–30 seconds as"
+  echo "  new Prometheus scrapes arrive (scrape interval = 15s)."
+  echo ""
+  echo "  In Jaeger, new traces show:"
+  echo "    → Short durations (sub-millisecond spans)"
+  echo "    → All spans green (no errors)"
+  echo "    → Normal call chain: web → api → [payments+cache] → currency"
+  echo ""
+  ruler
+  echo ""
+}
+
+validate_service() {
+  local svc="$1"
+  for s in "${SERVICES[@]}"; do
+    [[ "$s" == "$svc" ]] && return 0
+  done
+  return 1
+}
+
+# ── Non-interactive CLI dispatch ──────────────────────────────────────────────
+if [[ $# -gt 0 ]]; then
+  MODE=$(detect_mode)
+  case "$1" in
+    --inject-errors)
+      SERVICE="${2:?Usage: demo.sh --inject-errors <service> <rate>}"
+      RATE="${3:?Usage: demo.sh --inject-errors <service> <rate>}"
+      if [[ "$MODE" == "docker" ]]; then docker_inject_errors "$SERVICE" "$RATE"
+      else k8s_inject_errors "$SERVICE" "$RATE"; fi
+      ;;
+    --inject-latency)
+      SERVICE="${2:?Usage: demo.sh --inject-latency <service> <latency>}"
+      LATENCY="${3:?Usage: demo.sh --inject-latency <service> <latency>}"
+      if [[ "$MODE" == "docker" ]]; then docker_inject_latency "$SERVICE" "$LATENCY"
+      else k8s_inject_latency "$SERVICE" "$LATENCY"; fi
+      ;;
+    --reset)
+      if [[ "$MODE" == "docker" ]]; then docker_reset
+      else k8s_reset; fi
+      ;;
+    --open)
+      open_all "$MODE"
+      print_urls "$MODE"
+      ;;
+    *)
+      echo "Usage: demo.sh [--inject-errors <svc> <rate>] [--inject-latency <svc> <dur>] [--reset] [--open]"
+      exit 1
+      ;;
+  esac
+  exit 0
 fi
 
-if [[ $READY_COUNT -lt 6 || $OBS_COUNT -lt 5 ]]; then
-  echo ""
-  warn "Stack is not fully ready. The demo may be incomplete."
-  pause "Press ENTER to continue anyway, or Ctrl-C to wait and retry..."
-else
-  echo ""
-  info "All systems go! Let's start the demo."
-  pause "Press ENTER to begin..."
-fi
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 1: The Mesh — Service Topology
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 1 "The Service Mesh" "$CYAN"
-
-echo "  HashiCups is a microservices app running inside the Consul service mesh."
-echo "  Every service has an Envoy sidecar proxy injected automatically."
-echo ""
-echo "  Call graph:"
-echo ""
-echo -e "    ${CYAN}User${RESET}"
-echo -e "      └──▶ ${BOLD}nginx${RESET}  (reverse proxy)"
-echo -e "              ├──▶ ${BOLD}frontend${RESET}  (React UI)"
-echo -e "              └──▶ ${BOLD}public-api${RESET}  (GraphQL)"
-echo -e "                       ├──▶ ${BOLD}product-api${RESET}  (catalog)"
-echo -e "                       │         └──▶ ${BOLD}product-api-db${RESET}  (PostgreSQL)"
-echo -e "                       └──▶ ${BOLD}payments${RESET}  (payment service)"
-echo ""
-echo "  Each arrow is an mTLS-encrypted, Consul-intention-controlled connection."
-echo "  Each hop generates Envoy metrics, access logs, and Zipkin traces."
-
-step "Showing live pods..."
-echo ""
-kubectl get pods -n "$DEMO_NS" \
-  -o custom-columns='NAME:.metadata.name,READY:.status.containerStatuses[*].ready,STATUS:.status.phase' \
-  2>/dev/null | head -20 || true
-
-echo ""
-echo "  Each pod shows '2/2' — the app container + the Envoy (consul-dataplane) sidecar."
-echo ""
-
-link "$CONSUL_UI/ui/dc1/services" "→ Consul UI — Service list"
-echo ""
-echo "  In Consul UI you can see:"
-echo "    • All 6 services registered in the mesh"
-echo "    • mTLS certificates issued per service"
-echo "    • Intentions controlling which services can talk to which"
-
-open_url "$CONSUL_UI/ui/dc1/services"
-pause "Explore the Consul UI, then press ENTER for Grafana metrics..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 2: Metrics — Data Plane Dashboards
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 2 "Metrics: Envoy Proxy Dashboards" "$MAGENTA"
-
-echo "  Prometheus scrapes Envoy's merged metrics endpoint on port 20200/metrics"
-echo "  from every sidecar in the mesh. Grafana visualises them on two dashboards."
-echo ""
-echo "  Dashboard 1: Data Plane Health"
-echo "    — Are all services up?  What's the upstream success rate?"
-echo ""
-echo "  Dashboard 2: Data Plane Performance"
-echo "    — Requests/s, P50/P99 latency, 5xx error rate per service"
-
-echo ""
-step "Checking Prometheus target health..."
-CONSUL_UP=$(kubectl_exec_prom wget -qO- \
-  "http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22consul%22%7D" \
-  2>/dev/null | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-r=d.get('data',{}).get('result',[])
-up=[x for x in r if x['value'][1]=='1']
-print(f'{len(up)}/{len(r)} targets up')
-" 2>/dev/null || echo "unknown")
-
-ENVOY_UP=$(kubectl_exec_prom wget -qO- \
-  "http://localhost:9090/api/v1/query?query=up%7Bjob%3D%22envoy-sidecars%22%7D" \
-  2>/dev/null | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-r=d.get('data',{}).get('result',[])
-up=[x for x in r if x['value'][1]=='1']
-print(f'{len(up)}/{len(r)} targets up')
-" 2>/dev/null || echo "unknown")
-
-info "consul targets:       $CONSUL_UP"
-info "envoy-sidecars:       $ENVOY_UP"
-
-echo ""
-link "$GRAFANA/d/data-plane-health" "→ Data Plane Health dashboard"
-link "$GRAFANA/d/data-plane-performance" "→ Data Plane Performance dashboard"
-
-open_url "$GRAFANA/d/data-plane-health"
-
-echo ""
-echo "  What to look for in Data Plane Health:"
-echo "    • 'Running services' gauge — should show 6"
-echo "    • 'Upstream success rate' — should be ~100% (no traffic yet)"
-echo "    • All services green in the topology view"
-echo ""
-echo "  What to look for in Data Plane Performance:"
-echo "    • Request rate per service — near zero (we haven't sent traffic yet)"
-echo "    • We'll come back here after generating load in Chapter 3"
-
-pause "Press ENTER to start generating traffic..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 3: Traffic — Real requests through the mesh
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 3 "Traffic: Load Generation" "$BLUE"
-
-echo "  Starting background traffic — 3 workers hitting 5 endpoints every 400ms."
-echo "  This generates realistic Envoy metrics, access logs, and traces."
-echo ""
-echo "  Endpoints:"
-echo "    GET /                   (nginx → frontend)"
-echo "    GET /api                (nginx → public-api)"
-echo "    GET /api/coffees        (nginx → public-api → product-api → product-api-db)"
-echo "    GET /api/ingredients/1  (nginx → public-api → product-api → product-api-db)"
-echo "    GET /api/ingredients/2  (nginx → public-api → product-api → product-api-db)"
-
-echo ""
-start_traffic
-info "Traffic running (PID $TRAFFIC_PID)"
-
-echo ""
-echo "  Give it ~30 seconds to populate the dashboards, then:"
-echo ""
-link "$GRAFANA/d/data-plane-performance" "→ Data Plane Performance — watch requests/s climb"
-link "$GRAFANA/d/data-plane-health" "→ Data Plane Health — upstream success rate stays 100%"
-link "${PROM}/graph?g0.expr=envoy_cluster_upstream_rq_total%7Bjob%3D%22envoy-sidecars%22%7D" \
-  "→ Prometheus — raw envoy_cluster_upstream_rq_total metric"
-
-open_url "$GRAFANA/d/data-plane-performance"
-
-echo ""
-echo "  Key metrics now visible in Grafana:"
-echo "    • envoy_cluster_upstream_rq_total     — request count per upstream"
-echo "    • envoy_cluster_upstream_cx_active    — active connections"
-echo "    • envoy_http_downstream_rq_2xx        — success rate"
-echo "    • consul_mesh_active_root_ca_expiry   — mTLS certificate health"
-
-pause "Press ENTER to explore distributed traces in Jaeger..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 4: Traces — Distributed Tracing in Jaeger
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 4 "Traces: Distributed Tracing (Jaeger)" "$YELLOW"
-
-echo "  Every request through the mesh generates an Envoy Zipkin trace."
-echo "  OTel Collector receives them and forwards to Jaeger via OTLP."
-echo ""
-echo "  Tracing pipeline:"
-echo ""
-echo -e "    ${CYAN}Envoy sidecars${RESET}  (Zipkin B3 format)"
-echo -e "      └──▶ ${BOLD}OTel Collector :9411${RESET}  (Zipkin receiver)"
-echo -e "               └──▶ ${BOLD}traces/proxy pipeline${RESET}"
-echo -e "                        ├── k8sattributes  (adds pod/namespace metadata)"
-echo -e "                        ├── attributes     (marks telemetry.source=envoy-proxy)"
-echo -e "                        └── otlp/jaeger exporter"
-echo -e "                                └──▶ ${BOLD}Jaeger :4317${RESET}  (OTLP)"
-
-echo ""
-step "Fetching recent trace sample from Jaeger..."
-TRACE_RESULT=$(kubectl exec -n "$OBS_NS" \
-  "$(kubectl get pod -n "$OBS_NS" -l app=jaeger -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)" -- \
-  wget -qO- "http://localhost:16686/api/services" 2>/dev/null || echo "")
-
-if echo "$TRACE_RESULT" | grep -q '"data"'; then
-  SERVICES=$(echo "$TRACE_RESULT" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-print(', '.join(sorted(d.get('data',[]))))" 2>/dev/null || echo "unknown")
-  info "Services registered in Jaeger: $SERVICES"
-else
-  info "Jaeger is running — services will appear after first traces are processed"
-fi
-
-echo ""
-link "$JAEGER/search?service=nginx&limit=20" "→ Jaeger — traces from nginx (entry point)"
-echo ""
-echo "  Instructions:"
-echo "    1. Select service: nginx in the search panel"
-echo "    2. Click 'Find Traces' — you'll see recent requests"
-echo "    3. Click any trace to expand the waterfall:"
-echo ""
-echo "       nginx.proxy                         [───────────────────────]"
-echo "         └─ public-api.proxy               [──────────────]"
-echo "               ├─ product-api.proxy        [──────────]"
-echo "               │    └─ product-api-db.proxy [───────]"
-echo "               └─ payments.proxy           [─────]"
-echo ""
-echo "    4. Each span shows:"
-echo "       • Duration at each hop"
-echo "       • HTTP method/URL/status"
-echo "       • Kubernetes pod + namespace labels (from k8sattributes)"
-echo "       • consul.mesh.name tag"
-
-open_url "$JAEGER/search?service=nginx&limit=20"
-pause "Press ENTER to explore Loki logs + trace correlation..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 5: Logs — Envoy Access Logs in Loki
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 5 "Logs: Envoy Access Logs (Loki)" "$GREEN"
-
-echo "  Envoy access logs flow two ways:"
-echo ""
-echo -e "  ${BOLD}Path 1: OTel access logging extension${RESET}"
-echo "    Each sidecar ships OTLP log records to OTel Collector (gRPC)."
-echo "    Configured via envoyExtensions: builtin/otel-access-logging"
-echo "    in each ServiceDefaults. OTel Collector forwards to Loki."
-echo ""
-echo -e "  ${BOLD}Path 2: Promtail (stdout scraping)${RESET}"
-echo "    Envoy access logs also go to stdout (ProxyDefaults accessLogs.type: stdout)."
-echo "    Promtail DaemonSet scrapes /var/log/pods/**/*.log from every node"
-echo "    and ships to Loki. JSON pipeline stage extracts trace_id field."
-echo ""
-echo "  This gives you two complementary log streams in Loki."
-
-echo ""
-step "Checking Loki..."
-LOKI_READY=$(kubectl exec -n "$OBS_NS" \
-  "$(kubectl get pod -n "$OBS_NS" -l app=loki -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)" -- \
-  wget -qO- "http://localhost:3100/ready" 2>/dev/null || echo "")
-echo "$LOKI_READY" | grep -qi "ready" && info "Loki is ready" || warn "Loki status: $LOKI_READY"
-
-echo ""
-link "$GRAFANA/explore?orgId=1&left=%7B%22datasource%22:%22loki%22%7D" \
-  "→ Grafana Explore — Loki datasource"
-echo ""
-echo "  Step-by-step in Grafana Explore:"
-echo ""
-echo "  1. Select datasource: Loki"
-echo "  2. Run this query to see all proxy access logs:"
-query '{namespace="default"} | json'
-echo ""
-echo "  3. Filter to a specific service:"
-query '{namespace="default", app="public-api"} | json'
-echo ""
-echo "  4. Filter by HTTP status:"
-query '{namespace="default"} | json | status_code >= 200 and status_code < 300'
-echo ""
-echo "  5. Find a trace_id in a log line, then:"
-echo "     • Click the 'Jaeger' link icon on the log line"
-echo "     • It jumps directly to that trace in Jaeger!"
-echo "     (This works because Loki has derivedFields linking traceparent → Jaeger)"
-echo ""
-echo "  6. Live tail — click 'Live' to stream access logs in real time:"
-query '{namespace="default", app="nginx"} | json'
-
-open_url "$GRAFANA/explore?orgId=1&left=%7B%22datasource%22:%22loki%22%7D"
-pause "Press ENTER to inject a fault and watch the mesh respond..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 6: Fault Injection — Break product-api
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 6 "Fault Injection: Chaos Engineering" "$RED"
-
-echo "  We're about to simulate a production outage:"
-echo ""
-echo -e "    Scale ${BOLD}product-api${RESET} to ${RED}0 replicas${RESET}"
-echo ""
-echo "  Effect on HashiCups:"
-echo "    • GET /api/coffees    → 503 (product-api unreachable)"
-echo "    • GET /api/ingredients → 503 (same)"
-echo "    • GET /               → 200 (frontend still serves static UI)"
-echo ""
-echo "  What we'll see in observability:"
-echo -e "  ${MAGENTA}Metrics:${RESET}  envoy_cluster_upstream_rq_5xx spike in Grafana Data Plane Performance"
-echo -e "  ${YELLOW}Traces:${RESET}   ERROR spans on nginx → public-api hops in Jaeger"
-echo -e "  ${GREEN}Logs:${RESET}     status_code=503 lines in Loki"
-
-echo ""
-link "$GRAFANA/d/data-plane-performance" "→ Grafana — keep this open and watch the 5xx panel"
-link "$JAEGER/search?service=nginx&tags=%7B%22error%22%3A%22true%22%7D" \
-  "→ Jaeger — filter for error=true spans"
-
-open_url "$GRAFANA/d/data-plane-performance"
-
-pause "Press ENTER to INJECT THE FAULT (product-api → 0 replicas)..."
-
-echo ""
-step "Injecting fault: scaling product-api to 0..."
-kubectl scale deployment product-api -n "$DEMO_NS" --replicas=0
-info "product-api scaled to 0 replicas"
-
-echo ""
-echo "  Traffic is still running. Give it ~15-20 seconds for the metrics to update."
-echo ""
-echo "  Watch in Grafana Data Plane Performance:"
-echo "    • '5xx Error Rate' panel — should jump from 0% to ~60-80%"
-echo "    • Request rate drops on product-api upstreams"
-echo "    • public-api and nginx upstream error metrics climb"
-echo ""
-echo "  Watch in Jaeger:"
-echo "    • Search service=nginx, add tag error=true"
-echo "    • Traces show nginx→public-api succeeds but public-api→product-api fails"
-echo "    • The failing span has status_code=503 and error=true"
-echo ""
-echo "  Watch in Loki:"
-query '{namespace="default"} | json | status_code >= 500'
-
-FAULT_START=$(date +%s)
-pause "Press ENTER when you've seen the 5xx spike, to begin recovery..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# CHAPTER 7: Recovery — Self-healing mesh
-# ─────────────────────────────────────────────────────────────────────────────
-chapter 7 "Recovery: The Mesh Self-Heals" "$GREEN"
-
-FAULT_DURATION=$(( $(date +%s) - FAULT_START ))
-echo "  The fault lasted ${FAULT_DURATION} seconds."
-echo ""
-echo "  Restoring product-api to 1 replica..."
-
-kubectl scale deployment product-api -n "$DEMO_NS" --replicas=1
-info "product-api scaled back to 1 replica"
-
-echo ""
-step "Waiting for product-api to become ready..."
-kubectl rollout status deployment/product-api -n "$DEMO_NS" --timeout=120s \
-  && info "product-api is ready!" \
-  || warn "product-api taking longer than expected — check: kubectl logs -n $DEMO_NS -l app=product-api"
-
-echo ""
-echo "  Watch the mesh recover in real time:"
-echo "    • Grafana 5xx rate drops back to 0"
-echo "    • Jaeger — new traces succeed end-to-end"
-echo "    • Loki — status_code=200 lines resume"
-echo ""
-echo "  Consul's health checks detected the pod coming back automatically."
-echo "  No config changes needed — the mesh rebalances itself."
-
-echo ""
-echo "  A few metrics worth checking now that we have fault + recovery in the dataset:"
-echo ""
-echo "  In Prometheus (raw queries):"
-query 'rate(envoy_cluster_upstream_rq_5xx{job="envoy-sidecars"}[5m])'
-query 'histogram_quantile(0.99, rate(envoy_cluster_upstream_rq_time_bucket{job="envoy-sidecars"}[5m]))'
-echo ""
-link "$PROM/graph?g0.expr=rate(envoy_cluster_upstream_rq_5xx%7Bjob%3D%22envoy-sidecars%22%7D%5B1m%5D)" \
-  "→ Prometheus — 5xx rate over time"
-
-pause "Press ENTER to see the demo summary..."
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SUMMARY
-# ─────────────────────────────────────────────────────────────────────────────
-stop_traffic
-
+# ── Interactive mode ──────────────────────────────────────────────────────────
+clear
 echo ""
 echo -e "${BOLD}╔══════════════════════════════════════════════════════════════╗${RESET}"
-echo -e "${BOLD}║                  Demo Complete — Summary                     ║${RESET}"
+echo -e "${BOLD}║       Consul Service Mesh Observability — Demo               ║${RESET}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  ${MAGENTA}Metrics ${RESET}   Envoy proxy metrics scraped via :20200/metrics"
-echo -e "             Visualised in Grafana Data Plane Health & Performance"
-echo -e "             Prometheus query: ${DIM}envoy_cluster_upstream_rq_total${RESET}"
+echo -e "  ${CYAN}Topology:${RESET}  web → api → [payments (→ currency),  cache]"
 echo ""
-echo -e "  ${YELLOW}Traces  ${RESET}   Zipkin B3 traces from every Envoy sidecar"
-echo -e "             OTel Collector enriches with k8s metadata → Jaeger"
-echo -e "             Full call graph: nginx→public-api→product-api→db"
+
+MODE=$(detect_mode)
+case "$MODE" in
+  docker) echo -e "  ${GREEN}Mode: Docker Compose${RESET}  — single Envoy gateway proxying web" ;;
+  k8s)    echo -e "  ${GREEN}Mode: Kubernetes${RESET}     — per-service Envoy sidecars (full mesh)" ;;
+  *)
+    warn "Could not detect a running stack."
+    echo ""
+    echo "  Start the demo first:"
+    echo "    Docker:  task docker:up"
+    echo "    K8s:     task k8s:up && task k8s:open"
+    echo ""
+    exit 1
+    ;;
+esac
+
 echo ""
-echo -e "  ${GREEN}Logs    ${RESET}   Envoy access logs via otel-access-logging extension"
-echo -e "             + Promtail DaemonSet scraping pod stdout"
-echo -e "             trace_id in logs links directly to Jaeger traces"
+ruler
 echo ""
-echo -e "  ${RED}Fault   ${RESET}   product-api → 0 replicas"
-echo -e "             5xx spike visible in metrics + traces + logs simultaneously"
-echo -e "             Recovery automatic when pod restored — no mesh config change"
+echo -e "  ${BOLD}Three observability pillars${RESET}"
 echo ""
-echo "  ──────────────────────────────────────────────────────────"
+echo -e "  ${MAGENTA}Metrics${RESET}  Prometheus scrapes Envoy /stats/prometheus every 15s"
+echo "           → Grafana shows error rate, latency (P50/P95/P99), RPS"
+echo "           → Consul metrics: health checks, RPC rate, cluster membership"
 echo ""
-echo "  All observability data stays correlated via trace IDs:"
+echo -e "  ${YELLOW}Traces ${RESET}  Envoy generates Zipkin B3 spans → OTel Collector → Jaeger"
+echo "           → Each HTTP request = one trace spanning all service hops"
+echo "           → See timing at each hop, which call failed, propagation"
 echo ""
-echo "   [Grafana metric panel] → [Loki log line with trace_id] → [Jaeger trace]"
+echo -e "  ${GREEN}Logs   ${RESET}  Envoy writes JSON access logs → OTel filelog → Loki"
+echo "           → method, path, response_code, duration (ms), upstream_host"
+echo "           → traceparent field links each log line to its Jaeger trace"
 echo ""
-echo "  ──────────────────────────────────────────────────────────"
-echo ""
-echo "  Bookmarks for exploration:"
-link "$BASE_URL" "HashiCups App"
-link "$CONSUL_UI/ui/dc1/services" "Consul UI — Services"
-link "$GRAFANA/d/data-plane-health" "Grafana — Data Plane Health"
-link "$GRAFANA/d/data-plane-performance" "Grafana — Data Plane Performance"
-link "$JAEGER/search?service=nginx" "Jaeger — nginx traces"
-link "$GRAFANA/explore?orgId=1&left=%7B%22datasource%22:%22loki%22%7D" "Grafana — Loki Explore"
-link "$PROM/graph" "Prometheus — Raw metrics"
-echo ""
+ruler
+
+while true; do
+  echo ""
+  if [[ "$MODE" == "docker" ]]; then docker_status
+  else k8s_status; fi
+
+  echo -e "  ${BOLD}Choose an action:${RESET}"
+  echo ""
+  echo "    1) Inject errors   (e.g. payments fails 30% of requests → HTTP 500)"
+  echo "    2) Inject latency  (e.g. api adds 500ms sleep per request)"
+  echo "    3) Burst traffic   (30s of fast requests → spike in metrics)"
+  echo "    4) Reset all faults (back to 0 errors, 1ms latency)"
+  echo "    5) Show URLs"
+  echo "    6) Open all UIs in browser"
+  echo "    q) Quit"
+  echo ""
+  echo -en "  ${CYAN}›${RESET} "
+  read -r CHOICE
+
+  case "$CHOICE" in
+
+    1)
+      echo ""
+      echo -n "  Service [web / api / payments / cache / currency]: "
+      read -r SVC
+      if ! validate_service "$SVC"; then
+        warn "Unknown service '$SVC'  (choices: web api payments cache currency)"
+        continue
+      fi
+      echo -n "  Error rate [0.0–1.0  e.g. 0.3 = 30% fail]: "
+      read -r RATE
+      echo ""
+      if [[ "$MODE" == "docker" ]]; then docker_inject_errors "$SVC" "$RATE"
+      else k8s_inject_errors "$SVC" "$RATE"; fi
+      explain_errors "$SVC" "$RATE"
+      link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Service Health (error rate panel)"
+      link "$JAEGER/search?service=web&tags=%7B%22error%22%3A%22true%22%7D  → Jaeger error=true"
+      echo ""
+      ;;
+
+    2)
+      echo ""
+      echo -n "  Service [web / api / payments / cache / currency]: "
+      read -r SVC
+      if ! validate_service "$SVC"; then
+        warn "Unknown service '$SVC'  (choices: web api payments cache currency)"
+        continue
+      fi
+      echo -n "  Latency [e.g. 200ms / 500ms / 1s / 2s]: "
+      read -r LAT
+      echo ""
+      if [[ "$MODE" == "docker" ]]; then docker_inject_latency "$SVC" "$LAT"
+      else k8s_inject_latency "$SVC" "$LAT"; fi
+      explain_latency "$SVC" "$LAT"
+      link "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}  → Service-to-Service (P50/P95/P99 panel)"
+      link "$JAEGER/search?service=web             → Jaeger (compare span widths)"
+      echo ""
+      ;;
+
+    3)
+      echo ""
+      if [[ "$MODE" == "docker" ]]; then TARGET="http://localhost:21000/"
+      else TARGET="http://localhost:9090/"; fi
+      step "Sending burst traffic for 30s to $TARGET ..."
+      END=$(($(date +%s) + 30)); COUNT=0
+      while [[ $(date +%s) -lt $END ]]; do
+        curl -sf --max-time 2 "$TARGET" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+        curl -sf --max-time 2 "$TARGET" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+        curl -sf --max-time 2 "$TARGET" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+      done
+      info "Sent $COUNT requests"
+      explain_burst
+      link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Service Health (Request Volume)"
+      link "$JAEGER/search?service=web         → Jaeger (recent trace list)"
+      echo ""
+      ;;
+
+    4)
+      echo ""
+      if [[ "$MODE" == "docker" ]]; then docker_reset
+      else k8s_reset; fi
+      explain_reset
+      link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Watch error rate return to 0"
+      echo ""
+      ;;
+
+    5)
+      print_urls "$MODE"
+      ;;
+
+    6)
+      open_all "$MODE"
+      print_urls "$MODE"
+      ;;
+
+    q|Q|quit|exit)
+      echo ""
+      info "Demo session ended."
+      echo ""
+      break
+      ;;
+
+    *)
+      warn "Unknown choice: '$CHOICE'"
+      ;;
+  esac
+done

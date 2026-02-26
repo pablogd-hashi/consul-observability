@@ -1,0 +1,44 @@
+# kubernetes/consul/config-entries/service-defaults-fake-service.yaml
+# Sets protocol=http for all fake-service services so Consul can apply L7
+# traffic management (intentions, circuit breaking, load balancing) and
+# Envoy will generate per-request metrics (not just per-connection TCP metrics).
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: web
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: api
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: payments
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: cache
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: currency
+  namespace: default
+spec:
+  protocol: http

@@ -206,6 +206,41 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "id": 8,
+      "title": "Service Dependency Map",
+      "description": "Live service topology derived from distributed traces via the OTel servicegraphconnector. Each arrow = active call path, labelled with req/s. Works in both Docker and K8s — all services send Zipkin traces through OTel which derives the graph. Topology: web → api → [payments, cache] → currency.",
+      "type": "nodeGraph",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "nodes": { "mainStatUnit": "reqps" },
+        "edges": { "mainStatUnit": "reqps" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (client, server) (rate(traces_service_graph_request_total{client!=\"\",server!=\"\"}[1m]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true },
+            "renameByName": {
+              "client": "source",
+              "server": "target",
+              "Value": "mainStat"
+            }
+          }
+        }
+      ]
     }
   ]
 }
