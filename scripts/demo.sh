@@ -333,7 +333,7 @@ explain_latency() {
 explain_burst() {
   ruler
   echo ""
-  echo -e "  ${BOLD}What just happened — traffic burst${RESET}"
+  echo -e "  ${BOLD}What just happened — load test${RESET}"
   echo ""
   echo "  Sent ~3 req/s for 30s through the Envoy proxy, on top of the"
   echo "  background load generator (~1.5 req/s). Total ≈ 4.5 req/s peak."
@@ -355,6 +355,56 @@ explain_burst() {
   echo "  3. Traces should still succeed (short durations, green bars)"
   echo "  4. If you also have latency injected, burst traces show longer"
   echo "     durations — you're now generating both volume AND tail latency"
+  echo ""
+  ruler
+  echo ""
+}
+
+explain_circuit_breaking() {
+  local service="$1"
+  ruler
+  echo ""
+  echo -e "  ${BOLD}How circuit breaking works${RESET}"
+  echo ""
+  echo -e "  Envoy tracks consecutive 5xx responses from each upstream. After"
+  echo -e "  ${CYAN}3 consecutive failures${RESET}, it ejects the backend from the load"
+  echo "  balancing pool for 30 seconds. During ejection, requests get"
+  echo "  an immediate HTTP 503 from Envoy (no upstream call is made)."
+  echo ""
+  echo "  The $service service was injected with 100% errors. After 3"
+  echo "  failures, Envoy opened the circuit. Subsequent requests fail"
+  echo "  fast — no timeout, no waiting for upstream."
+  echo ""
+  echo -e "  ${BOLD}The distinctive circuit-open signature${RESET}"
+  echo ""
+  echo "  Compare these two states in Grafana Service Health:"
+  echo ""
+  echo "   State         Error rate   P95 latency"
+  echo "  ──────────────────────────────────────────────"
+  echo "   100% errors   100%         HIGH  (upstream responds slowly)"
+  echo "   Circuit open  100%         LOW   (Envoy rejects instantly)"
+  echo ""
+  echo "  Error rate is 100% in both cases, but latency DROPS when the"
+  echo "  circuit opens — that drop is Envoy taking over from the failing"
+  echo "  backend and failing fast."
+  echo ""
+  echo -e "  ${BOLD}Prometheus — verify the circuit is open${RESET}"
+  echo ""
+  echo "  envoy_cluster_outlier_detection_ejections_active"
+  echo "    → 1 means the backend is currently ejected"
+  echo "    → 0 means Envoy is sending traffic (circuit closed)"
+  echo ""
+  echo -e "  ${BOLD}Jaeger — what ejected requests look like${RESET}"
+  echo ""
+  echo "  1. Open Jaeger → Service: web → Find Traces"
+  echo "  2. Look at the 'Duration' column: ejected requests are"
+  echo "     microseconds (Envoy rejects before any network round-trip)"
+  echo "  3. The span shows http.status_code=503 with no child spans"
+  echo "     (no call was forwarded to $service)"
+  echo ""
+  echo "  After 30s (base_ejection_time), Envoy sends one probe request."
+  echo "  If $service is still failing, the ejection timer doubles."
+  echo "  Run option 4 (Reset) to restore baseline and close the circuit."
   echo ""
   ruler
   echo ""
@@ -472,12 +522,13 @@ while true; do
 
   echo -e "  ${BOLD}Choose an action:${RESET}"
   echo ""
-  echo "    1) Inject errors   (e.g. payments fails 30% of requests → HTTP 500)"
-  echo "    2) Inject latency  (e.g. api adds 500ms sleep per request)"
-  echo "    3) Burst traffic   (30s of fast requests → spike in metrics)"
-  echo "    4) Reset all faults (back to 0 errors, 1ms latency)"
-  echo "    5) Show URLs"
-  echo "    6) Open all UIs in browser"
+  echo "    1) Inject errors       (e.g. payments fails 30% of requests → HTTP 500)"
+  echo "    2) Inject latency      (e.g. api adds 500ms sleep per request)"
+  echo "    3) Load test           (30s of fast requests → spike in metrics)"
+  echo "    4) Reset all faults    (back to 0 errors, 1ms latency)"
+  echo "    5) Circuit breaking    (100% errors → Envoy ejects backend → 503s)"
+  echo "    6) Show URLs"
+  echo "    7) Open all UIs in browser"
   echo "    q) Quit"
   echo ""
   echo -en "  ${CYAN}›${RESET} "
@@ -551,10 +602,35 @@ while true; do
       ;;
 
     5)
-      print_urls "$MODE"
+      echo ""
+      # Docker: eject web (the only backend behind Envoy)
+      # K8s: eject payments (called by api, has currency downstream)
+      if [[ "$MODE" == "docker" ]]; then
+        CB_SERVICE="web"
+        TARGET="http://localhost:21000/"
+        docker_inject_errors "$CB_SERVICE" "1"
+      else
+        CB_SERVICE="payments"
+        TARGET="http://localhost:9090/"
+        k8s_inject_errors "$CB_SERVICE" "1"
+      fi
+      step "Sending 20 requests to trigger circuit breaker ejection..."
+      COUNT=0
+      for i in $(seq 1 20); do
+        curl -sf --max-time 2 "$TARGET" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+      done
+      info "Sent 20 requests ($COUNT succeeded)"
+      explain_circuit_breaking "$CB_SERVICE"
+      link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Service Health (error rate + latency drop)"
+      echo "  Prometheus query: envoy_cluster_outlier_detection_ejections_active"
+      echo ""
       ;;
 
     6)
+      print_urls "$MODE"
+      ;;
+
+    7)
       open_all "$MODE"
       print_urls "$MODE"
       ;;

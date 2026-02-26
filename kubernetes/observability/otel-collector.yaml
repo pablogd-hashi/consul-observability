@@ -117,6 +117,9 @@ data:
           ttl: 10s
           max_items: 1000
         cache_loop: 1s
+        # Allow edge creation from CLIENT spans alone via peer.service.
+        # OTel Zipkin receiver translates remoteEndpoint.serviceName → peer.service.
+        virtual_node_peer_attributes: ["peer.service"]
 
     processors:
       memory_limiter:

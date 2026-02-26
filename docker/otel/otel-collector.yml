@@ -58,6 +58,11 @@ connectors:
       ttl: 10s              # how long to wait for the matching server span
       max_items: 1000
     cache_loop: 1s
+    # Allow edge creation from CLIENT spans alone via the peer.service attribute.
+    # The OTel Zipkin receiver translates remoteEndpoint.serviceName → peer.service,
+    # so fake-service outgoing Zipkin CLIENT spans can build edges without a
+    # matching SERVER span arriving (Docker has only one Envoy, not per-service).
+    virtual_node_peer_attributes: ["peer.service"]
 
 processors:
   memory_limiter:
@@ -85,6 +90,15 @@ processors:
       - key: telemetry.source
         value: envoy-proxy
         action: insert
+
+  # Explicitly set the Loki label hint on Envoy access log records.
+  # The filelog receiver sets loki.resource.labels on the resource block,
+  # but a dedicated processor guarantees it reaches the Loki exporter.
+  resource/envoy_loki_labels:
+    attributes:
+      - action: upsert
+        key: loki.resource.labels
+        value: "service.name, log.source"
 
 exporters:
   otlp/jaeger:
@@ -133,7 +147,7 @@ service:
 
     logs:
       receivers: [otlp, filelog]
-      processors: [memory_limiter, batch]
+      processors: [memory_limiter, resource/envoy_loki_labels, batch]
       exporters: [loki, debug]
 
     # Service graph metrics derived from traces — scraped by Prometheus on :8889

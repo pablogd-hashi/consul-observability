@@ -5,8 +5,8 @@
 # Topology: web → api → [payments (→ currency), cache]
 #
 # Quick start:
-#   Docker:  task docker:up && task demo:open
-#   K8s:     task k8s:up   && task k8s:open && task demo:open
+#   Docker:  task docker:up && task validate
+#   K8s:     task k8s:up  && task validate
 
 version: "3"
 
@@ -32,44 +32,13 @@ tasks:
       - docker compose up -d
       - |
         echo ""
-        echo "✓ Stack is up. Run: task docker:validate"
+        echo "✓ Stack is up. Run: task validate"
 
   docker:down:
     desc: "Stop Docker Compose (keep volumes)"
     dir: docker
     cmds:
       - docker compose down
-
-  docker:delete:
-    desc: "Stop Docker Compose and delete ALL volumes (full reset)"
-    dir: docker
-    cmds:
-      - docker compose down -v
-      - echo "✓ All containers and volumes removed."
-
-  docker:validate:
-    desc: "Print endpoint summary and run quick health checks"
-    dir: docker
-    cmds:
-      - |
-        echo "╔══════════════════════════════════════════════════════════════╗"
-        echo "║          Consul Observability Demo — Docker                  ║"
-        echo "╠══════════════════════════════════════════════════════════════╣"
-        echo "║  App (via Envoy)    http://localhost:21000/                   ║"
-        echo "║  Consul UI          http://localhost:8500                     ║"
-        echo "║  Grafana            http://localhost:3000  (admin/admin)      ║"
-        echo "║  Jaeger             http://localhost:16686                    ║"
-        echo "║  Prometheus         http://localhost:9090                     ║"
-        echo "╚══════════════════════════════════════════════════════════════╝"
-        echo ""
-        echo "── Service status ──"
-        docker compose ps --format "table {{.Name}}\t{{.Status}}"
-        echo ""
-        echo "── Quick checks ──"
-        curl -sf http://localhost:8500/v1/status/leader | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY"
-        curl -sf http://localhost:9090/-/ready          && echo "  Prometheus: READY"          || echo "  Prometheus: NOT READY"
-        curl -sf http://localhost:3100/ready            && echo "  Loki: READY"                || echo "  Loki: NOT READY"
-        curl -sf http://localhost:21000/ >/dev/null     && echo "  Web (Envoy): READY"         || echo "  Web: NOT READY"
 
   # ── Kubernetes ─────────────────────────────────────────────────────────────
 
@@ -78,60 +47,12 @@ tasks:
     cmds:
       - bash scripts/kind-setup.sh
 
-  k8s:open:
-    desc: "Port-forward all UIs to localhost (runs in background, Ctrl-C to quit)"
-    cmds:
-      - |
-        echo "Starting port-forwards (Ctrl-C or: task k8s:down to stop)..."
-        pkill -f 'kubectl port-forward' 2>/dev/null || true
-        sleep 1
-        kubectl port-forward svc/web          9090:9090   -n default       &
-        kubectl port-forward svc/consul-ui    8500:80     -n consul        &
-        kubectl port-forward svc/grafana      3000:3000   -n observability &
-        kubectl port-forward svc/jaeger-query 16686:16686 -n observability &
-        kubectl port-forward svc/prometheus   9091:9090   -n observability &
-        echo ""
-        echo "╔══════════════════════════════════════════════════════════════╗"
-        echo "║          Consul Observability Demo — Kubernetes              ║"
-        echo "╠══════════════════════════════════════════════════════════════╣"
-        echo "║  App (web service)  http://localhost:9090                    ║"
-        echo "║  Consul UI          http://localhost:8500                    ║"
-        echo "║  Grafana            http://localhost:3000  (admin/admin)     ║"
-        echo "║  Jaeger             http://localhost:16686                   ║"
-        echo "║  Prometheus         http://localhost:9091                    ║"
-        echo "╚══════════════════════════════════════════════════════════════╝"
-        wait
-
   k8s:down:
-    desc: "Stop all port-forwards"
+    desc: "Stop port-forwards and delete the kind cluster (full teardown)"
     cmds:
       - pkill -f 'kubectl port-forward' 2>/dev/null || true
-      - echo "✓ Port-forwards stopped."
-
-  k8s:delete:
-    desc: "Delete the kind cluster (full reset)"
-    cmds:
       - kind delete cluster --name {{.CLUSTER}}
       - echo "✓ Cluster {{.CLUSTER}} deleted."
-
-  k8s:validate:
-    desc: "Show pod health and Consul service status"
-    cmds:
-      - |
-        echo "── fake-service pods ──"
-        kubectl get pods -n default -l 'app in (web,api,payments,currency,cache)' -o wide 2>/dev/null || echo "  (no pods found)"
-        echo ""
-        echo "── Consul pods ──"
-        kubectl get pods -n consul -o wide 2>/dev/null || echo "  (no consul namespace)"
-        echo ""
-        echo "── Observability pods ──"
-        kubectl get pods -n observability -o wide 2>/dev/null || echo "  (no observability namespace)"
-        echo ""
-        echo "── Consul registered services ──"
-        kubectl exec -n consul consul-server-0 -- consul catalog services 2>/dev/null || echo "  (consul not ready)"
-        echo ""
-        echo "── Consul intentions ──"
-        kubectl get serviceintentions -n default 2>/dev/null || echo "  (no intentions CRDs)"
 
   # ── Demo / Fault injection ─────────────────────────────────────────────────
 
@@ -140,30 +61,77 @@ tasks:
     cmds:
       - bash scripts/demo.sh
 
-  demo:errors:
-    desc: |
-      Inject errors into a service.
-      Usage: task demo:errors SERVICE=payments RATE=0.5
-      Services: web api payments cache currency
-      RATE: 0.0 (none) → 1.0 (100%)
-    cmds:
-      - bash scripts/demo.sh --inject-errors "{{.SERVICE}}" "{{.RATE}}"
+  # ── Validate ───────────────────────────────────────────────────────────────
 
-  demo:latency:
-    desc: |
-      Inject latency into a service.
-      Usage: task demo:latency SERVICE=api LATENCY=500ms
-      Services: web api payments cache currency
-      LATENCY: Go duration e.g. 200ms, 1s, 2s
+  validate:
+    desc: "Health check — auto-detects Docker vs Kubernetes, prints status + URLs"
     cmds:
-      - bash scripts/demo.sh --inject-latency "{{.SERVICE}}" "{{.LATENCY}}"
+      - |
+        DOCKER_RUNNING=false
+        K8S_RUNNING=false
 
-  demo:reset:
-    desc: "Reset all fault injection back to normal (0 errors, 1ms latency)"
-    cmds:
-      - bash scripts/demo.sh --reset
+        # Detect Docker
+        if docker compose -f docker/docker-compose.yml ps --status running \
+            --format json 2>/dev/null | grep -q '"web"'; then
+          DOCKER_RUNNING=true
+        fi
 
-  demo:open:
-    desc: "Open Grafana, Consul UI and Jaeger in the browser"
-    cmds:
-      - bash scripts/demo.sh --open
+        # Detect K8s
+        if kubectl get pods -n default -l 'app in (web,api)' \
+            --no-headers 2>/dev/null | grep -q Running; then
+          K8S_RUNNING=true
+        fi
+
+        if $DOCKER_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — Docker                  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  App (via Envoy)    http://localhost:21000/                   ║"
+          echo "║  Consul UI          http://localhost:8500                     ║"
+          echo "║  Grafana            http://localhost:3000  (admin/admin)      ║"
+          echo "║  Jaeger             http://localhost:16686                    ║"
+          echo "║  Prometheus         http://localhost:9090                     ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── Service status ──"
+          docker compose -f docker/docker-compose.yml ps --format "table {{.Name}}\t{{.Status}}"
+          echo ""
+          echo "── Quick checks ──"
+          curl -sf http://localhost:8500/v1/status/leader | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY"
+          curl -sf http://localhost:9090/-/ready          && echo "  Prometheus: READY"          || echo "  Prometheus: NOT READY"
+          curl -sf http://localhost:3100/ready            && echo "  Loki: READY"                || echo "  Loki: NOT READY"
+          curl -sf http://localhost:21000/ >/dev/null     && echo "  Web (Envoy): READY"         || echo "  Web: NOT READY"
+
+        elif $K8S_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — Kubernetes              ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  App (web service)  http://localhost:9090  (port-forward)    ║"
+          echo "║  Consul UI          http://localhost:8500  (port-forward)    ║"
+          echo "║  Grafana            http://localhost:3000  (admin/admin)     ║"
+          echo "║  Jaeger             http://localhost:16686 (port-forward)    ║"
+          echo "║  Prometheus         http://localhost:9091  (port-forward)    ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Port-forwards:                                              ║"
+          echo "║    kubectl port-forward svc/web          9090:9090 -n default       ║"
+          echo "║    kubectl port-forward svc/consul-ui    8500:80   -n consul        ║"
+          echo "║    kubectl port-forward svc/grafana      3000:3000 -n observability ║"
+          echo "║    kubectl port-forward svc/jaeger-query 16686:16686 -n observability ║"
+          echo "║    kubectl port-forward svc/prometheus   9091:9090 -n observability ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── fake-service pods ──"
+          kubectl get pods -n default -l 'app in (web,api,payments,currency,cache)' 2>/dev/null || echo "  (no pods found)"
+          echo ""
+          echo "── Observability pods ──"
+          kubectl get pods -n observability 2>/dev/null || echo "  (no observability namespace)"
+          echo ""
+          echo "── Consul services ──"
+          kubectl exec -n consul consul-server-0 -- consul catalog services 2>/dev/null || echo "  (consul not ready)"
+
+        else
+          echo "No running stack detected."
+          echo "  Docker:  task docker:up"
+          echo "  K8s:     task k8s:up"
+          exit 1
+        fi

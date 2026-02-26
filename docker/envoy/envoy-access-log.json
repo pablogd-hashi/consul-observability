@@ -110,6 +110,12 @@
               ]
             }
           ]
+        },
+        "outlier_detection": {
+          "consecutive_5xx": "3",
+          "interval": "10s",
+          "base_ejection_time": "30s",
+          "max_ejection_percent": 100
         }
       },
       {

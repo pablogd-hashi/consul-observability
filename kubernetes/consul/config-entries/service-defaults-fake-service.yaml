@@ -18,6 +18,14 @@ metadata:
   namespace: default
 spec:
   protocol: http
+  # Outlier detection: Envoy ejects a failing upstream after 3 consecutive 5xx.
+  # Requests to ejected backends immediately return 503 (circuit open).
+  upstreamConfig:
+    defaults:
+      outlierDetection:
+        consecutive5xx: 3
+        interval: 10s
+        baseEjectionTime: 30s
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceDefaults
@@ -26,6 +34,12 @@ metadata:
   namespace: default
 spec:
   protocol: http
+  upstreamConfig:
+    defaults:
+      outlierDetection:
+        consecutive5xx: 3
+        interval: 10s
+        baseEjectionTime: 30s
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceDefaults
