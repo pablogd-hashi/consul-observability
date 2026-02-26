@@ -1,0 +1,17 @@
+# kubernetes/consul/gateway/terminating-gateway-config.yaml
+# Configures the Consul Terminating Gateway to front the external 'rates' service.
+# The Helm chart deploys the gateway pod (see values.yaml terminatingGateways section).
+# This CRD tells Consul which external services the gateway is responsible for.
+#
+# Traffic flow: currency (mesh) → Terminating Gateway Envoy → rates (no connect-inject)
+# The TerminatingGateway enables mesh services to call external/legacy services
+# through a controlled, auditable exit point with L7 policies and mTLS to the gateway.
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: TerminatingGateway
+metadata:
+  name: terminating-gateway
+  namespace: consul
+spec:
+  services:
+    - name: rates
+      namespace: default

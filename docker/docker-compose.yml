@@ -34,6 +34,28 @@ services:
   # Topology: web → api → [payments, cache]  where  payments → currency
   # All services send Zipkin traces to otel-collector → Jaeger
 
+  # ─── External service (outside the mesh, fronted by Terminating Gateway) ─────
+  rates:
+    image: nicholasjackson/fake-service:v0.26.2
+    container_name: rates
+    restart: unless-stopped
+    environment:
+      - NAME=rates
+      - MESSAGE=Rates response (external service)
+      - LISTEN_ADDR=0.0.0.0:9090
+      - TRACING_ZIPKIN=http://otel-collector:9411
+      - LOG_FORMAT=json
+      # ── Fault injection ──
+      - ERROR_RATE=${RATES_ERROR_RATE:-0}
+      - TIMING_50_PERCENTILE=${RATES_LATENCY_P50:-1ms}
+      - TIMING_90_PERCENTILE=${RATES_LATENCY_P90:-1ms}
+      - TIMING_99_PERCENTILE=${RATES_LATENCY_P99:-1ms}
+    networks:
+      - consul-mesh
+    depends_on:
+      otel-collector:
+        condition: service_started
+
   currency:
     image: nicholasjackson/fake-service:v0.26.2
     container_name: currency
@@ -42,6 +64,8 @@ services:
       - NAME=currency
       - MESSAGE=Currency response
       - LISTEN_ADDR=0.0.0.0:9090
+      # Call rates through the Terminating Gateway (simulates external service egress)
+      - UPSTREAM_URIS=http://terminating-gateway:9190
       - TRACING_ZIPKIN=http://otel-collector:9411
       - LOG_FORMAT=json
       # ── Fault injection — override via docker/.env or `docker compose up currency` ──
@@ -55,6 +79,8 @@ services:
       consul:
         condition: service_healthy
       otel-collector:
+        condition: service_started
+      terminating-gateway:
         condition: service_started
 
   cache:
@@ -196,6 +222,59 @@ services:
       retries: 5
       start_period: 5s
 
+  # ─── API Gateway (north-south entry point — port 21001) ──────────────────
+  # Static Envoy with local_ratelimit (100 rps), tracing, and access logs.
+  # Demonstrates north-south traffic: [external client] → API Gateway → web.
+  api-gateway:
+    image: envoyproxy/envoy:v1.32.2
+    container_name: api-gateway
+    restart: unless-stopped
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "mkdir -p /var/log/envoy && exec envoy -c /etc/envoy/envoy-api-gateway.json --service-cluster api-gateway --service-node api-gateway -l info"
+    depends_on:
+      web:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    volumes:
+      - ./envoy/envoy-api-gateway.json:/etc/envoy/envoy-api-gateway.json:ro
+      - envoy-logs:/var/log/envoy
+    ports:
+      - "20201:20201"  # Admin / metrics
+      - "21001:21001"  # API Gateway listener (north-south entry)
+    networks:
+      - consul-mesh
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/localhost/20201 && printf \"GET /ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n\" >&3 && timeout 2 cat <&3 | grep -q LIVE'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ─── Terminating Gateway (controlled mesh egress → external services) ─────
+  # Static Envoy routing currency → rates (external service outside the mesh).
+  # Demonstrates east-west egress: currency → TGW → rates.
+  terminating-gateway:
+    image: envoyproxy/envoy:v1.32.2
+    container_name: terminating-gateway
+    restart: unless-stopped
+    user: root
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "exec envoy -c /etc/envoy/envoy-terminating-gateway.json --service-cluster terminating-gateway --service-node terminating-gateway -l info"
+    depends_on:
+      rates:
+        condition: service_started
+    volumes:
+      - ./envoy/envoy-terminating-gateway.json:/etc/envoy/envoy-terminating-gateway.json:ro
+    ports:
+      - "20202:20202"  # Admin / metrics
+      - "9190:9190"    # Terminating Gateway listener (internal, called by currency)
+    networks:
+      - consul-mesh
+
   # ─── Prometheus ───────────────────────────────────────────────────────────
   prometheus:
     image: prom/prometheus:v2.52.0
@@ -310,6 +389,8 @@ services:
     depends_on:
       envoy:
         condition: service_healthy
+      api-gateway:
+        condition: service_healthy
       web:
         condition: service_started
     networks:
@@ -325,6 +406,8 @@ services:
           curl -sf http://envoy:21000/ > /dev/null
           curl -sf http://envoy:21000/ > /dev/null
           curl -sf http://envoy:21000/ > /dev/null
+          # Through the API Gateway (north-south path, generates gateway metrics)
+          curl -sf http://api-gateway:21001/ > /dev/null
           # Direct hit to web (bypasses Envoy, still generates traces)
           curl -sf http://web:9090/ > /dev/null
           sleep 2

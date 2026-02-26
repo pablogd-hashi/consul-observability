@@ -107,3 +107,20 @@ dns:
 # ── Sync catalog ─────────────────────────────────────────────────────────────
 syncCatalog:
   enabled: false   # Enable to sync k8s services to Consul catalog
+
+# ── API Gateway ──────────────────────────────────────────────────────────────
+# Deploys a Consul-managed Envoy pod as the north-south API Gateway.
+# Exposes the mesh to external clients via the Kubernetes Gateway API.
+# Requires Gateway API CRDs to be installed before this Helm chart.
+apiGateway:
+  enabled: true
+  image: "hashicorp/consul-api-gateway:0.5.4"
+
+# ── Terminating Gateway ───────────────────────────────────────────────────────
+# Enables mesh services to call external/legacy services through a controlled
+# exit point. currency → rates (external) routes through this gateway.
+terminatingGateways:
+  enabled: true
+  gateways:
+    - name: terminating-gateway
+      replicas: 1

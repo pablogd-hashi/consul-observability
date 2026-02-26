@@ -3,7 +3,7 @@
 #
 # With ACLs enabled, the default intention policy is deny-all.
 # Traffic flow:
-#   web → api → [payments, cache]   where   payments → currency
+#   web → api → [payments, cache]   where   payments → currency → rates (via TGW)
 #
 # Apply BEFORE deploying services or all traffic will be blocked.
 ---
@@ -53,4 +53,16 @@ spec:
     name: currency
   sources:
     - name: payments
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: rates
+  namespace: default
+spec:
+  destination:
+    name: rates
+  sources:
+    - name: currency
       action: allow

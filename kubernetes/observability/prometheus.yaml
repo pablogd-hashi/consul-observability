@@ -64,6 +64,36 @@ data:
           - targets:
               - otel-collector.observability.svc.cluster.local:8888
 
+      # Consul gateway pods (consul namespace) — API Gateway + Terminating Gateway Envoy admin.
+      # Consul Helm deploys these with prometheus.io/scrape=true when global.metrics.enabled=true.
+      # Sets service label from component pod label (api-gateway / terminating-gateway)
+      # so the Grafana gateways dashboard can distinguish the two gateway types.
+      - job_name: consul-gateways
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names: [consul]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            regex: "true"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_label_component]
+            regex: "(api-gateway|terminating-gateway)"
+            action: keep
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            regex: (.+)
+            target_label: __metrics_path__
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            regex: "([^:]+)(?::\\d+)?;(\\d+)"
+            replacement: "$1:$2"
+            target_label: __address__
+          - source_labels: [__meta_kubernetes_pod_label_component]
+            target_label: service
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+
       # Service graph topology metrics from the OTel servicegraphconnector.
       # Emits traces_service_graph_request_total{client="web",server="api",...}
       # which powers the "Service Dependency Map" node graph panel in Grafana.

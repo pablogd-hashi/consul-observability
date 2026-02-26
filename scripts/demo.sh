@@ -3,7 +3,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Interactive fault-injection demo for the Consul observability stack.
 #
-# Service topology:  web → api → [payments (→ currency), cache]
+# Service topology:  web → api → [payments (→ currency → rates), cache]
+#                   Entry:  API Gateway → web  (Docker: :21001  K8s: :8080)
 #
 # Usage (interactive):
 #   ./scripts/demo.sh
@@ -26,7 +27,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKER_DIR="$REPO_ROOT/docker"
 DOCKER_ENV="$DOCKER_DIR/.env"
 
-SERVICES=(web api payments cache currency)
+SERVICES=(web api payments cache currency rates)
 
 # ── Grafana dashboard UIDs ────────────────────────────────────────────────────
 GRAFANA="${GRAFANA_URL:-http://localhost:3000}"
@@ -37,6 +38,7 @@ PROM="${PROM_URL:-http://localhost:9090}"
 UID_SERVICE_HEALTH="ffbs6tb0gr4lcb"
 UID_SERVICE_TO_SERVICE="service-to-service"
 UID_LOGS="envoy-access-logs"
+UID_GATEWAYS="consul-gateways"
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 BOLD='\033[1m';    RESET='\033[0m'
@@ -108,7 +110,7 @@ docker_reset() {
   step "Restarting fake-service containers ..."
   docker compose -f "$DOCKER_DIR/docker-compose.yml" \
     --env-file "$DOCKER_ENV" up -d --force-recreate \
-    web api payments cache currency
+    web api payments cache currency rates
   info "All services reset to 0% errors / 1ms latency"
 }
 
@@ -195,15 +197,18 @@ print_urls() {
   link "$GRAFANA/d/${UID_SERVICE_HEALTH}     → Service Health  (error rate, P95 latency, RPS)"
   link "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}  → Service Map     (node graph + trace waterfall)"
   link "$GRAFANA/d/${UID_LOGS}                → Access Logs     (Loki stream + Jaeger links)"
+  link "$GRAFANA/d/${UID_GATEWAYS}            → Gateways        (API GW + Terminating GW metrics)"
   link "$JAEGER/search?service=web            → Jaeger          (distributed traces)"
   link "$CONSUL_UI/ui/dc1/services            → Consul UI       (service topology + intentions)"
   link "$PROM/graph                           → Prometheus      (raw metric explorer)"
   if [[ "$mode" == "docker" ]]; then
     echo ""
-    note "  App: curl http://localhost:21000/   (routed through Envoy)"
+    note "  App (direct Envoy):  curl http://localhost:21000/"
+    note "  App (API Gateway):   curl http://localhost:21001/"
   else
     echo ""
-    note "  App: curl http://localhost:9090/    (run: task k8s:open first)"
+    note "  App (direct svc):    curl http://localhost:9090/    (run: task k8s:open first)"
+    note "  App (API Gateway):   curl http://localhost:8080/"
   fi
   echo ""
 }
@@ -214,10 +219,12 @@ open_all() {
   sleep 0.4
   open_url "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}"
   sleep 0.4
+  open_url "$GRAFANA/d/${UID_GATEWAYS}"
+  sleep 0.4
   open_url "$JAEGER/search?service=web"
   sleep 0.4
   open_url "$CONSUL_UI/ui/dc1/services"
-  info "Opened: Grafana Service Health, Service-to-Service, Jaeger, Consul UI"
+  info "Opened: Grafana Service Health, Service-to-Service, Gateways, Jaeger, Consul UI"
 }
 
 # ── Narrative explanations ────────────────────────────────────────────────────
@@ -431,6 +438,69 @@ explain_reset() {
   echo ""
 }
 
+explain_gateway() {
+  local mode="$1"
+  ruler
+  echo ""
+  echo -e "  ${BOLD}What just happened — gateway load test${RESET}"
+  echo ""
+  echo "  Sent 30s of traffic through the API Gateway."
+  echo "  The full path for each request:"
+  echo ""
+  if [[ "$mode" == "docker" ]]; then
+    echo "    curl → API Gateway (:21001) → web → api → [payments, cache]"
+    echo "                                              payments → currency"
+    echo "                                              currency → TGW (:9190) → rates"
+  else
+    echo "    curl → API Gateway (:8080) → web → api → [payments, cache]"
+    echo "                                            payments → currency"
+    echo "                                            currency → transparent proxy → TGW → rates"
+  fi
+  echo ""
+  echo -e "  ${BOLD}API Gateway panels (Consul Gateways dashboard)${RESET}"
+  echo ""
+  echo "  Request Rate:   total RPS entering via the API Gateway listener"
+  echo "  Error Rate:     5xx responses from the gateway (not from upstreams)"
+  echo "  P99 Latency:    end-to-end time at the gateway listener"
+  echo "  Rate Limited:   requests dropped by the local rate limiter"
+  echo "                  (Docker: 100 req/s fill, burst 200 — above that returns 429)"
+  echo "                  Send > 100 req/s to make this panel non-zero."
+  echo ""
+  echo -e "  ${BOLD}Terminating Gateway panels${RESET}"
+  echo ""
+  echo "  External RPS:       calls forwarded to the external rates service"
+  echo "  External Error Rate: errors from rates (set RATES_ERROR_RATE to inject)"
+  echo "  Active Connections: open TCP connections to rates"
+  echo ""
+  echo "  The rates hop also appears in the Service-to-Service node graph as a"
+  echo "  new node connected to currency — that extra hop is the TGW path."
+  echo ""
+  echo -e "  ${BOLD}How API Gateway differs from a sidecar${RESET}"
+  echo ""
+  echo "  Sidecars:    east-west traffic only (service to service inside the mesh)"
+  echo "               one Envoy per pod, 1:1 with the app"
+  echo "  API Gateway: north-south traffic (external client into the mesh)"
+  echo "               shared Envoy, single entry point for all clients"
+  echo "               can enforce auth, rate limiting, routing rules at the edge"
+  echo ""
+  echo "  Terminating Gateway: controlled mesh exit point"
+  echo "               mesh services reach external/legacy services through it"
+  echo "               mTLS terminates at the TGW; the last mile to rates is plain HTTP"
+  echo "               only services with an allow intention can reach rates"
+  echo ""
+  echo -e "  ${BOLD}Prometheus queries to explore${RESET}"
+  echo ""
+  echo "  envoy_http_downstream_rq_total{job=\"api-gateway\"}"
+  echo "    → total requests received by the API Gateway"
+  echo "  envoy_cluster_upstream_rq_total{job=\"terminating-gateway\"}"
+  echo "    → total calls proxied by the TGW to rates"
+  echo "  envoy_http_local_rate_limiter_rate_limited{job=\"api-gateway\"}"
+  echo "    → requests dropped by the local rate limiter"
+  echo ""
+  ruler
+  echo ""
+}
+
 validate_service() {
   local svc="$1"
   for s in "${SERVICES[@]}"; do
@@ -478,13 +548,13 @@ echo -e "${BOLD}╔════════════════════�
 echo -e "${BOLD}║       Consul Service Mesh Observability — Demo               ║${RESET}"
 echo -e "${BOLD}╚══════════════════════════════════════════════════════════════╝${RESET}"
 echo ""
-echo -e "  ${CYAN}Topology:${RESET}  web → api → [payments (→ currency),  cache]"
+echo -e "  ${CYAN}Topology:${RESET}  API GW → web → api → [payments (→ currency → rates),  cache]"
 echo ""
 
 MODE=$(detect_mode)
 case "$MODE" in
-  docker) echo -e "  ${GREEN}Mode: Docker Compose${RESET}  — single Envoy gateway proxying web" ;;
-  k8s)    echo -e "  ${GREEN}Mode: Kubernetes${RESET}     — per-service Envoy sidecars (full mesh)" ;;
+  docker) echo -e "  ${GREEN}Mode: Docker Compose${RESET}  — API GW (:21001) + TGW (:9190) + per-service Envoy" ;;
+  k8s)    echo -e "  ${GREEN}Mode: Kubernetes${RESET}     — API GW (:8080) + TGW + per-service Envoy sidecars" ;;
   *)
     warn "Could not detect a running stack."
     echo ""
@@ -527,8 +597,9 @@ while true; do
   echo "    3) Load test           (30s of fast requests → spike in metrics)"
   echo "    4) Reset all faults    (back to 0 errors, 1ms latency)"
   echo "    5) Circuit breaking    (100% errors → Envoy ejects backend → 503s)"
-  echo "    6) Show URLs"
-  echo "    7) Open all UIs in browser"
+  echo "    6) Gateway load test   (30s through API Gateway → TGW → rates path)"
+  echo "    7) Show URLs"
+  echo "    8) Open all UIs in browser"
   echo "    q) Quit"
   echo ""
   echo -en "  ${CYAN}›${RESET} "
@@ -538,10 +609,10 @@ while true; do
 
     1)
       echo ""
-      echo -n "  Service [web / api / payments / cache / currency]: "
+      echo -n "  Service [web / api / payments / cache / currency / rates]: "
       read -r SVC
       if ! validate_service "$SVC"; then
-        warn "Unknown service '$SVC'  (choices: web api payments cache currency)"
+        warn "Unknown service '$SVC'  (choices: web api payments cache currency rates)"
         continue
       fi
       echo -n "  Error rate [0.0–1.0  e.g. 0.3 = 30% fail]: "
@@ -551,16 +622,16 @@ while true; do
       else k8s_inject_errors "$SVC" "$RATE"; fi
       explain_errors "$SVC" "$RATE"
       link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Service Health (error rate panel)"
-      link "$JAEGER/search?service=web&tags=%7B%22error%22%3A%22true%22%7D  → Jaeger error=true"
+      link "$JAEGER/search?service=web&tags=error%3Dtrue  → Jaeger error=true"
       echo ""
       ;;
 
     2)
       echo ""
-      echo -n "  Service [web / api / payments / cache / currency]: "
+      echo -n "  Service [web / api / payments / cache / currency / rates]: "
       read -r SVC
       if ! validate_service "$SVC"; then
-        warn "Unknown service '$SVC'  (choices: web api payments cache currency)"
+        warn "Unknown service '$SVC'  (choices: web api payments cache currency rates)"
         continue
       fi
       echo -n "  Latency [e.g. 200ms / 500ms / 1s / 2s]: "
@@ -627,10 +698,28 @@ while true; do
       ;;
 
     6)
-      print_urls "$MODE"
+      echo ""
+      if [[ "$MODE" == "docker" ]]; then GATEWAY_URL="http://localhost:21001/"
+      else GATEWAY_URL="http://localhost:8080/"; fi
+      step "Sending gateway load test for 30s to $GATEWAY_URL ..."
+      END=$(($(date +%s) + 30)); COUNT=0
+      while [[ $(date +%s) -lt $END ]]; do
+        curl -sf --max-time 3 "$GATEWAY_URL" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+        curl -sf --max-time 3 "$GATEWAY_URL" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+        curl -sf --max-time 3 "$GATEWAY_URL" -o /dev/null 2>/dev/null && COUNT=$((COUNT+1)) || true
+      done
+      info "Sent $COUNT requests through the API Gateway"
+      explain_gateway "$MODE"
+      link "$GRAFANA/d/${UID_GATEWAYS}            → Consul Gateways (API GW + TGW metrics)"
+      link "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}  → Service-to-Service (rates node in graph)"
+      echo ""
       ;;
 
     7)
+      print_urls "$MODE"
+      ;;
+
+    8)
       open_all "$MODE"
       print_urls "$MODE"
       ;;

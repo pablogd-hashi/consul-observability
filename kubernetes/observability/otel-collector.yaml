@@ -184,9 +184,11 @@ data:
           exporter: false
           level: true
       # Expose scraped Consul + Envoy metrics as a Prometheus scrape endpoint on :8889
+      # No namespace prefix — keeps metric names identical to Docker so dashboards
+      # work without environment-specific queries (e.g. traces_service_graph_request_total
+      # not otelcol_traces_service_graph_request_total).
       prometheus:
         endpoint: "0.0.0.0:8889"
-        namespace: otelcol
       debug:
         verbosity: normal
 

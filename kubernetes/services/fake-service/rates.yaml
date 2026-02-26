@@ -1,35 +1,35 @@
+# kubernetes/services/fake-service/rates.yaml
+# External service — NOT in the Consul service mesh.
+# No consul.hashicorp.com/connect-inject annotation → no Envoy sidecar injected.
+# Traffic from currency (mesh) reaches this service via the Terminating Gateway.
+# The TerminatingGateway CRD (kubernetes/consul/gateway/terminating-gateway-config.yaml)
+# tells Consul's control plane to route currency → rates through the gateway.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: currency
+  name: rates
   namespace: default
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: currency
+  name: rates
   namespace: default
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: currency
+      app: rates
   template:
     metadata:
       labels:
-        app: currency
-      annotations:
-        consul.hashicorp.com/connect-inject: "true"
-        consul.hashicorp.com/transparent-proxy: "true"
-        consul.hashicorp.com/transparent-proxy-overwrite-probes: "true"
-        consul.hashicorp.com/transparent-proxy-exclude-inbound-ports: "20200"
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "20200"
-        prometheus.io/path: "/stats/prometheus"
+        app: rates
+      # No connect-inject annotation — this service is outside the mesh.
+      # No prometheus annotations — no Envoy sidecar to scrape.
     spec:
-      serviceAccountName: currency
+      serviceAccountName: rates
       containers:
-        - name: currency
+        - name: rates
           image: nicholasjackson/fake-service:v0.26.2
           ports:
             - containerPort: 9090
@@ -47,19 +47,15 @@ spec:
             periodSeconds: 15
           env:
             - name: NAME
-              value: "currency"
+              value: "rates"
             - name: MESSAGE
-              value: "Currency response"
+              value: "Rates response (external service)"
             - name: LISTEN_ADDR
               value: "0.0.0.0:9090"
             - name: TRACING_ZIPKIN
               value: "http://otel-collector.observability.svc.cluster.local:9411"
             - name: LOG_FORMAT
               value: "json"
-            # Transparent proxy intercepts this and routes via the Terminating Gateway → rates (external).
-            - name: UPSTREAM_URIS
-              value: "http://rates:9090"
-            # ── Fault injection (set via kubectl set env or Taskfile) ──────────
             - name: ERROR_RATE
               value: "0"
             - name: TIMING_50_PERCENTILE
@@ -79,12 +75,15 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: currency
+  name: rates
   namespace: default
+  labels:
+    app: rates
 spec:
   selector:
-    app: currency
+    app: rates
   ports:
     - name: http
       port: 9090
       targetPort: 9090
+  type: ClusterIP

@@ -1,0 +1,13 @@
+# kubernetes/consul/gateway/gateway-class.yaml
+# Registers Consul as a Kubernetes Gateway API implementation.
+# The controllerName tells the Kubernetes Gateway API which controller manages
+# Gateway resources with this class — Consul's api-gateway controller.
+#
+# Prerequisites: Kubernetes Gateway API CRDs must be installed first.
+# Applied in kind-setup.sh before this file.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: GatewayClass
+metadata:
+  name: consul
+spec:
+  controllerName: hashicorp.com/consul-api-gateway

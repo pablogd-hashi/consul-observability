@@ -47,3 +47,22 @@ scrape_configs:
     relabel_configs:
       - target_label: instance
         replacement: otel-collector-servicegraph
+
+  # ── Gateways ────────────────────────────────────────────────────────────────
+  - job_name: api-gateway
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets:
+          - api-gateway:20201
+    relabel_configs:
+      - target_label: instance
+        replacement: api-gateway
+
+  - job_name: terminating-gateway
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets:
+          - terminating-gateway:20202
+    relabel_configs:
+      - target_label: instance
+        replacement: terminating-gateway

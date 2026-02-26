@@ -68,6 +68,20 @@ data:
           # CRI-prefixed line is not valid JSON.
           - cri: {}
 
+          # Add service_name and log_source labels to consul-dataplane sidecar logs.
+          # consul-dataplane is the container Consul Connect injects — it contains
+          # Envoy's JSON access log output.
+          # These labels match the Docker Loki label scheme set by the OTel filelog
+          # receiver, so the "Envoy Access Logs" Grafana dashboard works on both
+          # Docker ({service_name="envoy-sidecar", log_source="access-log"}) and K8s
+          # without environment-specific queries.
+          - match:
+              selector: '{container="consul-dataplane"}'
+              stages:
+                - static_labels:
+                    service_name: envoy-sidecar
+                    log_source: access-log
+
           # No additional label extraction here — keep stream labels low-cardinality.
           # The dashboard uses Loki's "| json" pipeline at query time to parse
           # Envoy fields (response_code, duration, method, path, upstream_host).

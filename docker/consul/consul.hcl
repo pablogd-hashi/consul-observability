@@ -36,7 +36,8 @@ ports {
   dns   = 8600
 }
 
-# ── fake-service topology: web → api → [payments, cache] → currency ──────────
+# ── fake-service topology: web → api → [payments, cache] → currency → rates ──
+# rates is an external service (no connect) fronted by the Terminating Gateway.
 
 services {
   name = "web"
@@ -120,5 +121,43 @@ services {
 
   connect {
     sidecar_service {}
+  }
+}
+
+# ── Gateways ──────────────────────────────────────────────────────────────────
+
+# API Gateway: north-south entry point (external → web)
+services {
+  name = "api-gateway"
+  id   = "api-gateway-1"
+  port = 21001
+  tags = ["gateway", "ingress", "api-gateway"]
+
+  check {
+    http     = "http://api-gateway:20201/ready"
+    interval = "10s"
+    timeout  = "3s"
+  }
+}
+
+# Terminating Gateway: controlled mesh egress (currency → rates external)
+services {
+  name = "terminating-gateway"
+  id   = "terminating-gateway-1"
+  port = 9190
+  tags = ["gateway", "terminating", "egress"]
+}
+
+# rates: external service (no consul connect — outside the mesh)
+services {
+  name = "rates"
+  id   = "rates-1"
+  port = 9090
+  tags = ["v1", "external", "rates"]
+
+  check {
+    http     = "http://rates:9090/"
+    interval = "10s"
+    timeout  = "3s"
   }
 }

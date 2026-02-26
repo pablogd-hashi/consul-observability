@@ -1,0 +1,24 @@
+# kubernetes/consul/gateway/gateway.yaml
+# Deploys a Consul-managed Envoy instance as the API Gateway.
+# The Consul API Gateway controller watches for this resource and deploys
+# an Envoy pod in the consul namespace, then creates a Service for it.
+#
+# After deployment, the Service is patched to NodePort 30004 by kind-setup.sh
+# so it's accessible at http://localhost:8080/ via the kind port mapping.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: Gateway
+metadata:
+  name: api-gateway
+  namespace: consul
+  annotations:
+    # Allow routes from the default namespace to attach to this gateway
+    gateway.networking.k8s.io/allowed-routes: "all"
+spec:
+  gatewayClassName: consul
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 8080
+      allowedRoutes:
+        namespaces:
+          from: All

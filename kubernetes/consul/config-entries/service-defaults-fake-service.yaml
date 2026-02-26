@@ -18,14 +18,14 @@ metadata:
   namespace: default
 spec:
   protocol: http
-  # Outlier detection: Envoy ejects a failing upstream after 3 consecutive 5xx.
-  # Requests to ejected backends immediately return 503 (circuit open).
+  # Passive health check: Consul's abstraction for Envoy outlier detection.
+  # After maxFailures consecutive 5xx, Envoy ejects the upstream backend.
+  # Consul translates this to consecutive_5xx in the Envoy xDS cluster config.
   upstreamConfig:
     defaults:
-      outlierDetection:
-        consecutive5xx: 3
+      passiveHealthCheck:
         interval: 10s
-        baseEjectionTime: 30s
+        maxFailures: 3
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceDefaults
@@ -36,10 +36,9 @@ spec:
   protocol: http
   upstreamConfig:
     defaults:
-      outlierDetection:
-        consecutive5xx: 3
+      passiveHealthCheck:
         interval: 10s
-        baseEjectionTime: 30s
+        maxFailures: 3
 ---
 apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceDefaults
@@ -53,6 +52,14 @@ apiVersion: consul.hashicorp.com/v1alpha1
 kind: ServiceDefaults
 metadata:
   name: currency
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: rates
   namespace: default
 spec:
   protocol: http

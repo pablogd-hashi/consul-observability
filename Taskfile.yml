@@ -2,7 +2,7 @@
 # Usage: task <task-name>
 # Docs:  https://taskfile.dev
 #
-# Topology: web → api → [payments (→ currency), cache]
+# Topology: API GW → web → api → [payments (→ currency → rates), cache]
 #
 # Quick start:
 #   Docker:  task docker:up && task validate
@@ -33,6 +33,9 @@ tasks:
       - |
         echo ""
         echo "✓ Stack is up. Run: task validate"
+        echo ""
+        echo "  Direct Envoy:  http://localhost:21000/"
+        echo "  API Gateway:   http://localhost:21001/"
 
   docker:down:
     desc: "Stop Docker Compose (keep volumes)"
@@ -87,6 +90,7 @@ tasks:
           echo "║          Consul Observability Demo — Docker                  ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  App (via Envoy)    http://localhost:21000/                   ║"
+          echo "║  API Gateway        http://localhost:21001/                   ║"
           echo "║  Consul UI          http://localhost:8500                     ║"
           echo "║  Grafana            http://localhost:3000  (admin/admin)      ║"
           echo "║  Jaeger             http://localhost:16686                    ║"
@@ -101,12 +105,14 @@ tasks:
           curl -sf http://localhost:9090/-/ready          && echo "  Prometheus: READY"          || echo "  Prometheus: NOT READY"
           curl -sf http://localhost:3100/ready            && echo "  Loki: READY"                || echo "  Loki: NOT READY"
           curl -sf http://localhost:21000/ >/dev/null     && echo "  Web (Envoy): READY"         || echo "  Web: NOT READY"
+          curl -sf http://localhost:21001/ >/dev/null     && echo "  API Gateway: READY"         || echo "  API Gateway: NOT READY"
 
         elif $K8S_RUNNING; then
           echo "╔══════════════════════════════════════════════════════════════╗"
           echo "║          Consul Observability Demo — Kubernetes              ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  App (web service)  http://localhost:9090  (port-forward)    ║"
+          echo "║  API Gateway        http://localhost:8080  (NodePort 30004)  ║"
           echo "║  Consul UI          http://localhost:8500  (port-forward)    ║"
           echo "║  Grafana            http://localhost:3000  (admin/admin)     ║"
           echo "║  Jaeger             http://localhost:16686 (port-forward)    ║"
@@ -121,7 +127,7 @@ tasks:
           echo "╚══════════════════════════════════════════════════════════════╝"
           echo ""
           echo "── fake-service pods ──"
-          kubectl get pods -n default -l 'app in (web,api,payments,currency,cache)' 2>/dev/null || echo "  (no pods found)"
+          kubectl get pods -n default -l 'app in (web,api,payments,currency,cache,rates)' 2>/dev/null || echo "  (no pods found)"
           echo ""
           echo "── Observability pods ──"
           kubectl get pods -n observability 2>/dev/null || echo "  (no observability namespace)"
