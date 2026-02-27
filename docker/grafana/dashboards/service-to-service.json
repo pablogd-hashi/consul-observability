@@ -210,7 +210,7 @@
     {
       "id": 8,
       "title": "Service Dependency Map",
-      "description": "Live service topology derived from distributed traces via the OTel servicegraphconnector. Each arrow = active call path, labelled with req/s. Works in both Docker and K8s — all services send Zipkin traces through OTel which derives the graph. Topology: web → api → [payments, cache] → currency.",
+      "description": "Live service topology. Nodes (Query A) = services with active Envoy sidecars, showing req/s through each service. Edges (Query B) = service-to-service call paths from the OTel servicegraph connector, showing inter-service req/s. Topology: web → api → [payments, cache] → currency → rates (via Terminating Gateway). Nodes appear immediately; edges appear within ~60s as the load generator drives traffic.",
       "type": "nodeGraph",
       "gridPos": { "h": 14, "w": 24, "x": 0, "y": 22 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -221,11 +221,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (client, server) (rate(traces_service_graph_request_total{client!=\"\",server!=\"\"}[1m]))",
+          "expr": "sum by (service) (rate(envoy_cluster_upstream_rq_total{job=\"envoy-sidecars\"}[5m]))",
           "format": "table",
           "instant": true,
           "legendFormat": "",
           "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (client, server) (rate(traces_service_graph_request_total{client!=\"\",server!=\"\"}[5m]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "B"
         }
       ],
       "transformations": [
@@ -234,9 +242,12 @@
           "options": {
             "excludeByName": { "Time": true },
             "renameByName": {
+              "service": "id",
               "client": "source",
               "server": "target",
-              "Value": "mainStat"
+              "Value": "mainStat",
+              "Value #A": "mainStat",
+              "Value #B": "mainStat"
             }
           }
         }

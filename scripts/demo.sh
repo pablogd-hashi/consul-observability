@@ -4,7 +4,7 @@
 # Interactive fault-injection demo for the Consul observability stack.
 #
 # Service topology:  web → api → [payments (→ currency → rates), cache]
-#                   Entry:  API Gateway → web  (Docker: :21001  K8s: :8080)
+#                   Entry:  API Gateway → web  (Docker: :21001  K8s: :18080)
 #
 # Usage (interactive):
 #   ./scripts/demo.sh
@@ -208,7 +208,7 @@ print_urls() {
   else
     echo ""
     note "  App (direct svc):    curl http://localhost:9090/    (run: task k8s:open first)"
-    note "  App (API Gateway):   curl http://localhost:8080/"
+    note "  App (API Gateway):   curl http://localhost:18080/"
   fi
   echo ""
 }
@@ -452,7 +452,7 @@ explain_gateway() {
     echo "                                              payments → currency"
     echo "                                              currency → TGW (:9190) → rates"
   else
-    echo "    curl → API Gateway (:8080) → web → api → [payments, cache]"
+    echo "    curl → API Gateway (:18080) → web → api → [payments, cache]"
     echo "                                            payments → currency"
     echo "                                            currency → transparent proxy → TGW → rates"
   fi
@@ -554,7 +554,7 @@ echo ""
 MODE=$(detect_mode)
 case "$MODE" in
   docker) echo -e "  ${GREEN}Mode: Docker Compose${RESET}  — API GW (:21001) + TGW (:9190) + per-service Envoy" ;;
-  k8s)    echo -e "  ${GREEN}Mode: Kubernetes${RESET}     — API GW (:8080) + TGW + per-service Envoy sidecars" ;;
+  k8s)    echo -e "  ${GREEN}Mode: Kubernetes${RESET}     — API GW (:18080) + TGW + per-service Envoy sidecars" ;;
   *)
     warn "Could not detect a running stack."
     echo ""
@@ -700,7 +700,7 @@ while true; do
     6)
       echo ""
       if [[ "$MODE" == "docker" ]]; then GATEWAY_URL="http://localhost:21001/"
-      else GATEWAY_URL="http://localhost:8080/"; fi
+      else GATEWAY_URL="http://localhost:18080/"; fi
       step "Sending gateway load test for 30s to $GATEWAY_URL ..."
       END=$(($(date +%s) + 30)); COUNT=0
       while [[ $(date +%s) -lt $END ]]; do

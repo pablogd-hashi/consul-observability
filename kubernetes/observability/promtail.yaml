@@ -156,6 +156,16 @@ spec:
           image: grafana/promtail:3.1.0
           args:
             - "-config.file=/etc/promtail/promtail.yml"
+          env:
+            # Promtail auto-filters K8s SD to the node it runs on.
+            # Without this, os.Hostname() returns the pod name, not the node name,
+            # causing the SD field selector to be spec.nodeName=<pod-name> which
+            # matches zero pods. Setting HOSTNAME to spec.nodeName makes Promtail
+            # use the actual Kubernetes node name for the field selector.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           ports:
             - containerPort: 9080
               name: http

@@ -24,6 +24,12 @@ Technical reference for metrics, logs, and distributed tracing in this Consul se
    - [Sampling Configuration](#sampling-configuration)
 5. [OpenTelemetry Collector Pipeline](#opentelemetry-collector-pipeline)
 6. [Grafana Dashboards](#grafana-dashboards)
+   - [1. Service Health](#1-service-health-service-healthjson)
+   - [2. Consul Service Health](#2-consul-service-health-consul-healthjson)
+   - [3. Service-to-Service Traffic](#3-service-to-service-traffic-service-to-servicejson)
+   - [4. Envoy Access Logs](#4-envoy-access-logs-logsjson)
+   - [5. Consul Gateways](#5-consul-gateways-gatewaysjson)
+   - [Dashboard Quick Reference](#dashboard-quick-reference)
 7. [Troubleshooting](#troubleshooting)
 
 ---
@@ -848,62 +854,343 @@ resource/loki_labels:
 
 ## Grafana Dashboards
 
-All dashboards are provisioned automatically at startup from ConfigMaps / provisioning directories.
+All dashboards live under the **Consul Observability** folder in Grafana and are provisioned automatically at startup — no manual import needed. Credentials: `admin / admin`.
 
-### Data Plane Health (`data-plane-health.json`)
+There are five dashboards, each covering a distinct observability concern. The sections below explain what each dashboard shows, why it matters, and how to read it.
 
-**Datasource:** Prometheus
+---
 
-Key panels:
-- **Running HashiCups services** (Gauge): `sum(envoy_server_live{app!="traffic-generator"})` — shows count of live Envoy sidecars. Thresholds: 5=warning, 6=ok.
-- **Connections Rejected** (Time series): `rate(envoy_listener_downstream_cx_overload_reject[$__interval])` — non-zero values indicate CPU/memory overload causing connection drops.
-- **P99 Upstream Latency** (Time series): `histogram_quantile(0.99, sum(rate(envoy_cluster_upstream_rq_time_bucket[$__rate_interval])) by (le, consul_destination_service))`.
+### 1. Service Health (`service-health.json`)
 
-### Golden Signals (`golden-signals.json`)
+**UID:** `ffbs6tb0gr4lcb` · **Datasource:** Prometheus
 
-**Datasource:** Prometheus
+**Why it matters:** This is the first dashboard to open when something is wrong. It answers the question *"which service is unhealthy right now, and how bad is it?"* across the entire mesh simultaneously. Instead of checking services one by one, you get error rates, latency, and circuit breaker state for every service pair on a single screen.
 
-Implements the Google SRE four golden signals:
-- **Request Rate**: `sum(rate(envoy_cluster_upstream_rq_total[$__rate_interval])) by (consul_destination_service)`
-- **Error Rate**: `sum(rate(envoy_cluster_upstream_rq_xx{envoy_response_code_class="5"}[$__rate_interval])) by (consul_destination_service)`
-- **Latency P50/P95/P99**: `histogram_quantile` over `envoy_cluster_upstream_rq_time_bucket`
-- **Saturation**: `envoy_cluster_upstream_cx_active` (active connections as proxy for saturation)
+#### Row: Services Health
 
-### Service Mesh Topology (`service-mesh.json` / `service-topology.json`)
+| Panel | Type | What it shows | Why it matters |
+|-------|------|---------------|----------------|
+| **Services with High Error Rate** | Time series | Per service-pair 5xx error rate as a percentage. Threshold lines at 1% and 5%. | The first signal of a failing upstream. A spike here means callers are receiving errors — look at which `consul_destination_service` is the source. |
+| **P95 Latency** | Time series | 95th-percentile upstream response time per service pair (ms). | Latency spikes before errors do. A rising P95 on `payments → currency` warns you before callers start timing out. |
+| **Request Volume** | Time series | Requests per second per service pair. | Puts error rate in context. A 10% error rate at 1 RPS is noise; the same at 1000 RPS is an incident. Also shows the load-generator traffic baseline. |
+| **Upstream Connections** | Time series | Active open connections per service pair. | Connection pool exhaustion shows up here before request failures do. Steady growth with no drop means connections are leaking. |
 
-**Datasource:** Prometheus
+**PromQL used:**
 
-Shows the full request graph across the service mesh:
-- Per-service request rates, error rates, and latency
-- Active upstream connections per service pair
-- Uses `consul_source_service` and `consul_destination_service` labels
+```promql
+-- Error rate per service pair
+(1 - (
+  sum(irate(envoy_cluster_upstream_rq_xx{
+    envoy_response_code_class!="5",
+    consul_destination_service!=""
+  }[5m])) by (local_cluster, consul_destination_service)
+  /
+  sum(irate(envoy_cluster_upstream_rq_xx{
+    consul_destination_service!=""
+  }[5m])) by (local_cluster, consul_destination_service)
+)) * 100
 
-### Envoy Access Logs (`envoy-logs.json`)
+-- P95 latency per service pair
+histogram_quantile(0.99,
+  sum(rate(envoy_cluster_upstream_rq_time_bucket{
+    consul_destination_service!~""
+  }[5m])) by (le, local_cluster, consul_destination_service)
+)
+```
 
-**Datasource:** Loki
+#### Row: Circuit Breaker
 
-- Live log stream from all Envoy sidecars
-- Filters for specific response codes, upstream clusters, or paths
-- Trace correlation via `traceparent` derived field
+| Panel | Type | What it shows | Why it matters |
+|-------|------|---------------|----------------|
+| **Active Circuit Breakers** | Time series | Number of backends currently ejected by Envoy outlier detection, per service pair. | A value > 0 means Envoy has removed at least one backend pod from the load balancing pool. Callers are fast-failing instead of waiting. This is the circuit is **open**. |
+| **Circuit Breakers Triggered** | Bar gauge | Peak count of consecutive 5xx ejections per destination service over the selected time range. | A summary of *which services caused circuit breaking* during a time window. Useful for post-incident review: "payments triggered circuit breaking 3 times during the incident." |
 
-### Consul Health (`consul-health.json`)
+**How to use circuit breaker panels in a demo:**
 
-**Datasource:** Prometheus
+1. Inject 100% errors on `payments`: `kubectl set env deployment/payments ERROR_RATE=1.0 -n default`
+2. **Active Circuit Breakers** rises from 0 to 1 within seconds.
+3. **P95 Latency** for `api → payments` drops (Envoy is fast-failing, not waiting).
+4. **Error Rate** for `api → payments` climbs to 100%.
+5. Restore: `kubectl set env deployment/payments ERROR_RATE=0 -n default`
 
-- Raft leader status and commit time
-- Goroutine count (leak detection)
-- Memory allocation
-- Gossip member count and failed members
+---
 
-### Service Traceability (`service-traceability.json`)
+### 2. Consul Service Health (`consul-health.json`)
 
-**Datasources:** Prometheus + Jaeger
+**UID:** `consul-health` · **Datasource:** Prometheus
 
-- Source/destination service selector variables
-- Request rate, error rate, P99 latency filtered by selected service pair
-- Active connections
-- Direct Jaeger trace panels for selected source and destination service
-- Data links from all metric panels to Jaeger Explore
+**Why it matters:** The mesh only works if Consul is healthy. This dashboard monitors the Consul control plane itself — not the services running inside the mesh. It answers *"is Consul operating correctly?"* A degraded Consul server means sidecars cannot get new service discovery updates, ACL tokens cannot be resolved, and config changes cannot be distributed.
+
+#### Panels
+
+| Panel | Type | What it shows | Why it matters |
+|-------|------|---------------|----------------|
+| **LAN Members** | Stat | Total Consul gossip members (servers + clients). Formula: `consul_members_servers + consul_members_clients`. | A number lower than expected means a node left or crashed the gossip pool. In this demo: expected value is 1 (single server, no clients). |
+| **Service Instances** | Stat | Count of service instances registered in the Consul catalog (`consul_state_billable_service_instances`). | Tracks how many things Consul is tracking. Unexpected drops mean services deregistered — possibly due to health check failures or pod restarts. |
+| **Autopilot Healthy** | Stat | Consul autopilot health check result (1 = healthy, 0 = degraded). | Green = the cluster is operationally sound. Red means Consul has detected a problem with its own state — raft cannot commit, or a server is unreachable. |
+| **Catalog API Activity** | Time series | Rate of catalog register / deregister API calls per second. | Shows mesh churn. A burst of deregistrations followed by registrations means pods restarted. Sustained deregistrations with no re-registrations means services are gone. |
+| **Consul RPC Request Rate** | Time series | Incoming RPC calls per second to the Consul server. | Baseline traffic from sidecars doing health checks and service discovery. A sudden spike can indicate a thundering herd after a restart. |
+| **Raft Applied Index** | Time series | Monotonically increasing Raft commit index (applied vs last). | The gap between `applied_index` and `last_index` indicates replication lag. They should be equal or within 1-2 entries. A widening gap means the leader is struggling to replicate. |
+| **Consul Runtime Memory** | Time series | Go heap allocated bytes and total reserved bytes. | Memory growth without a corresponding drop signals a leak. In a healthy single-server demo deployment, this should stay flat. |
+| **Goroutines** | Time series | Active goroutines in the Consul server process. | Goroutines in Go are cheap, but unbounded growth (e.g. from stuck RPC connections) indicates a bug or leak. Should be stable. |
+| **Registered Service Instances Over Time** | Time series | All service instances vs billable service instances over time. | Useful for showing how the mesh grows as services are deployed. In this demo, shows all six fake-service instances appearing after `task k8s:up`. |
+
+**What to watch for:**
+
+```
+Autopilot Healthy = 0       → Consul cluster is degraded. Check server logs.
+Raft applied_index stalls   → Leader cannot commit. Check network or disk.
+Goroutines growing linearly → Goroutine leak. Restart the server pod.
+Members drops by 1          → A node left gossip. Was a pod restarted?
+```
+
+---
+
+### 3. Service-to-Service Traffic (`service-to-service.json`)
+
+**UID:** `service-to-service` · **Datasources:** Prometheus + Jaeger
+
+**Why it matters:** This is the primary demo dashboard. It gives a helicopter view of the entire fake-service topology — traffic entering the mesh, how it flows between services, the distributed trace for any individual request, and a live topology graph. It answers *"how is traffic flowing through the mesh right now?"* without needing to look at individual services.
+
+#### Top-row Stats (whole-mesh aggregates)
+
+| Panel | Type | What it shows |
+|-------|------|---------------|
+| **Request Rate (RPS)** | Stat | Total upstream requests per second across all services. The load generator drives ~0.5 RPS baseline. |
+| **Error Rate (%)** | Stat | Percentage of all upstream requests returning 5xx. Should be 0% at baseline. |
+| **P99 Latency (ms)** | Stat | 99th-percentile response time across all upstream calls. Shows tail latency. |
+| **Active Connections** | Stat | Total open upstream connections across all service sidecars. |
+
+These four stats implement the [Google SRE Golden Signals](https://sre.google/sre-book/monitoring-distributed-systems/) at the mesh level.
+
+#### Time Series Panels
+
+| Panel | What it shows | Why it matters |
+|-------|---------------|----------------|
+| **Request Rate by Status Class** | RPS split by 2xx / 4xx / 5xx response class. | Lets you see if errors are client-side (4xx) vs server-side (5xx). During fault injection, watch the 5xx line rise. |
+| **Response Time (P50 / P95 / P99)** | Three latency percentiles over time. | P50 is median (most requests). P99 is the worst 1%. The gap between P50 and P99 reveals tail latency variance — a large gap means a small number of requests are very slow. |
+
+#### Distributed Traces — Service Call Chain
+
+**Type:** Traces panel · **Datasource:** Jaeger
+
+Shows recent traces from Jaeger for the entire mesh. Each row is one end-to-end request from the load generator through the full chain: `load generator → API Gateway → web → api → [payments → currency → rates, cache]`.
+
+**Why it matters:** Metrics tell you *something is slow*. Traces tell you *exactly which hop is slow* and for *which specific request*. Click any trace row to open a waterfall view showing every span, its duration, and its relationship to parent spans. This is how you pinpoint bottlenecks to the exact service and operation.
+
+**What a healthy trace looks like:**
+```
+web (20ms total)
+  └── api (18ms)
+        ├── payments (12ms)
+        │     └── currency (8ms)
+        │           └── rates [via TGW] (5ms)
+        └── cache (3ms)
+```
+
+**During latency injection** (e.g. `kubectl set env deployment/payments TIMING_99_PERCENTILE=500ms`): the `payments` span grows to 500ms and the entire trace duration reflects it.
+
+#### Service Dependency Map
+
+**Type:** Node graph · **Datasource:** Prometheus (servicegraph metrics)
+
+A live topology graph showing which services call which other services, with request rate on the edges. Nodes are services; edges are call relationships derived from distributed traces.
+
+**Why it matters:** This is the demo's headline visual. It shows the mesh topology *as traffic actually flows*, not as it was configured. You can see:
+- The full call chain (`web → api → payments → currency → rates`)
+- The cache branch (`api → cache`)
+- Real-time request rates on every edge
+
+**How it works technically:** The OTel Collector's `servicegraph` connector reads incoming Zipkin spans from Envoy, matches client and server spans for the same request, and emits `traces_service_graph_request_total{client="web", server="api"}` counters to Prometheus. Both the node query (unique services) and the edge query (call pairs) come from this single metric, so the graph appears as soon as traces flow — typically within 60 seconds of startup.
+
+```promql
+-- Nodes: unique services that receive traffic
+sum by (node_id) (
+  label_replace(
+    rate(traces_service_graph_request_total{server!=""}[5m]),
+    "node_id", "$1", "server", "(.+)"
+  )
+)
+
+-- Edges: service-to-service call rates
+sum by (client, server) (
+  rate(traces_service_graph_request_total{client!="",server!=""}[5m])
+)
+```
+
+**If the graph shows no data:** check that Envoy traces are reaching the OTel Collector:
+```bash
+kubectl port-forward svc/otel-collector 8889:8889 -n observability &
+curl -s http://localhost:8889/metrics | grep traces_service_graph_request_total
+```
+
+---
+
+### 4. Envoy Access Logs (`logs.json`)
+
+**UID:** `envoy-logs-k8s` · **Datasource:** Loki
+
+**Why it matters:** Metrics aggregate — they tell you *that* 5% of requests failed. Access logs tell you *which specific requests* failed, to which path, from which pod, at what time. This is the raw signal underneath the metrics, and it is the only place where you can see individual request details: exact URL, response code, upstream host, request ID, and latency for every single HTTP transaction.
+
+In Kubernetes, every Consul-injected pod has a `consul-dataplane` sidecar that runs Envoy. Envoy writes one structured JSON log line per HTTP request to stdout, which Promtail picks up and ships to Loki with labels `service_name=envoy-sidecar` and `log_source=access-log`.
+
+#### Log Format
+
+Each log line is a JSON object with these fields (configured in `proxy-defaults.yaml`):
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `start_time` | Request start (ISO 8601) | `2026-02-27T06:04:45.016Z` |
+| `method` | HTTP method | `GET` |
+| `path` | Request path | `/` |
+| `protocol` | HTTP protocol version | `HTTP/1.1` |
+| `http_status_code` | Response code | `200` |
+| `response_flags` | Envoy condition flags | `-` (normal), `UH` (no healthy upstream) |
+| `duration` | Total request time (ms) | `18` |
+| `bytes_sent` | Response body size (bytes) | `2885` |
+| `upstream_cluster` | Envoy cluster that handled it | `api.default.dc1.internal...consul` |
+| `upstream_host` | Specific pod IP:port | `10.244.0.25:20000` |
+| `authority` | HTTP `Host` / `:authority` header | `api:9090` |
+| `request_id` | Unique per-request ID | `23fd21d6-c70f-...` |
+
+#### Panels
+
+| Panel | Type | What it shows | Why it matters |
+|-------|------|---------------|----------------|
+| **Total Requests (5m rate)** | Stat | Count of all Envoy access log lines in the past 5 minutes across all sidecar pods. | Sanity check — confirms Promtail is collecting logs and traffic is flowing. Should match the load generator cadence. |
+| **5xx Errors (5m rate)** | Stat | Count of log lines where `response_code >= 500` in the past 5 minutes. | Absolute count of errors, not just a percentage. During fault injection this number climbs. |
+| **Request Rate by Service** | Time series | Log line rate per second per application (`app` label). | Shows which services are handling the most traffic, broken out by pod label. Spikes indicate load shifts. |
+| **Error Rate by Service** | Time series | Rate of 5xx log lines per second per application. | Shows *which service's sidecar* is logging errors — whether it's an inbound error (service returned 5xx) or an outbound error (upstream returned 5xx). |
+| **Live Log Stream** | Logs | Raw JSON access log lines from all `consul-dataplane` containers in the `default` namespace. | The most direct view: you can read individual requests, filter by path or status code, and see them stream in real time. |
+
+#### Useful LogQL queries
+
+```logql
+-- All access logs across all sidecars
+{namespace="default", container="consul-dataplane"}
+
+-- Only 5xx errors, parsed as JSON
+{namespace="default", container="consul-dataplane"}
+  | json
+  | response_code >= 500
+
+-- Slow requests (> 200ms)
+{namespace="default", container="consul-dataplane"}
+  | json
+  | duration > 200
+
+-- Traffic to a specific upstream
+{namespace="default", container="consul-dataplane"}
+  | json
+  | upstream_cluster =~ ".*payments.*"
+
+-- Errors from a specific service's sidecar
+{namespace="default", container="consul-dataplane", app="api"}
+  | json
+  | response_code >= 500
+```
+
+**Pipeline from Envoy to Grafana:**
+
+```
+Envoy (in consul-dataplane container)
+  writes JSON to stdout
+    → Promtail DaemonSet reads /var/log/pods/default_*_*/consul-dataplane/*.log
+      → adds labels: service_name=envoy-sidecar, log_source=access-log, namespace, pod, app
+        → pushes to Loki
+          → Grafana queries Loki with LogQL
+```
+
+> **Promtail requirement:** The DaemonSet must have `HOSTNAME` set from `spec.nodeName` via the downward API. Without it, Promtail's Kubernetes SD uses the pod name as a node filter and discovers zero targets. See [Troubleshooting](#troubleshooting).
+
+---
+
+### 5. Consul Gateways (`gateways.json`)
+
+**UID:** `consul-gateways` · **Datasource:** Prometheus
+
+**Why it matters:** Gateways are the entry and exit points of the mesh and are the most likely place for configuration problems to appear. This dashboard monitors both gateways independently:
+
+- **API Gateway** — the north-south entry point where external clients enter the mesh. If this is slow or erroring, *every user* is affected.
+- **Terminating Gateway** — the mesh's controlled exit point to external services. If this is unhealthy, the `currency → rates` path breaks, cascading into `payments → currency` failures.
+
+The dashboard queries support both Docker (using `job` label) and Kubernetes (using `service` label) environments automatically by including both label selectors.
+
+#### Row: API Gateway (north-south entry point)
+
+| Panel | Type | What it shows | Why it matters |
+|-------|------|---------------|----------------|
+| **Request Rate** | Stat | Requests per second entering the mesh through the API Gateway's HTTP downstream listener. | The total inbound load. The load generator drives a steady baseline; spikes indicate external traffic bursts or test runs. |
+| **Error Rate (5xx)** | Stat | Percentage of requests through the API Gateway returning 5xx. | An error here affects all users. A non-zero value means either the gateway itself is misconfigured or all downstream services are failing. |
+| **P99 Latency** | Stat | 99th-percentile latency at the API Gateway downstream listener (ms). | The worst-case experience for users. Includes the full round-trip: gateway → web → api → all upstreams → back. |
+| **Rate Limited (last 5m)** | Stat | Requests dropped by the API Gateway's local rate limiter (configured at 100 req/s fill, burst 200). | The only place in the stack where rate limiting is applied. Non-zero means external clients hit the limit. Useful during the load-test demo step to show the rate limiter activating. |
+| **Request Rate by Status Class** | Time series | API Gateway requests split by 2xx / 4xx / 5xx over time. | Lets you distinguish between client errors (4xx, e.g. bad requests or auth failures) and server errors (5xx, e.g. backend failures or gateway misrouting). |
+| **Latency Percentiles** | Time series | P50 / P95 / P99 over time at the API Gateway. | Shows how latency evolves. The P99 line is most sensitive to upstream problems — a single slow backend will push the P99 up while the P50 stays flat. |
+
+**Metrics source:** The API Gateway Envoy pod exposes HTTP downstream metrics (traffic *entering* Envoy from outside the mesh) rather than upstream cluster metrics. This is different from sidecar metrics which track outbound calls.
+
+```promql
+-- API Gateway inbound RPS (Kubernetes)
+sum(rate(envoy_http_downstream_rq_total{service="api-gateway"}[1m]))
+
+-- API Gateway P99 latency (Kubernetes)
+histogram_quantile(0.99,
+  sum(rate(envoy_http_downstream_rq_time_bucket{service="api-gateway"}[1m])) by (le)
+)
+```
+
+#### Row: Terminating Gateway (mesh-to-external)
+
+| Panel | Type | What it shows | Why it matters |
+|-------|------|---------------|----------------|
+| **External RPS** | Stat | Requests per second from the Terminating Gateway to the external `rates` service. | Confirms the `currency → rates` path is active. Should match the `currency` service's upstream call rate. Zero means the path is broken. |
+| **External Error Rate** | Stat | Percentage of calls from TGW to `rates` returning 5xx. | Errors here propagate up to `currency → payments → api → web`. This is where you inject faults on `rates` to demonstrate the Terminating Gateway error path. |
+| **External P99 Latency** | Stat | 99th-percentile upstream latency from TGW to `rates` (ms). | Latency on the external call. Since `rates` is not inside the mesh (no sidecar), this is the raw TCP round-trip to the `rates` pod plus its processing time. |
+| **Active Connections** | Stat | Open connections from the Terminating Gateway to `rates`. | Should be a small stable number. A connection count of zero with non-zero RPS would indicate connections are being rapidly opened and closed (misconfiguration or network issue). |
+| **External Service Calls (currency → TGW → rates)** | Time series | Combined view: RPS, 5xx rate, and P99 latency for the TGW → rates path over time. | The full picture of the external call path in one panel. During the gateway load-test demo step, all three lines move together. |
+
+**Why the Terminating Gateway matters for demos:** It demonstrates that the Consul service mesh can manage traffic to services that cannot be modified (legacy systems, third-party APIs). The `rates` service has no sidecar and no mTLS — traffic to it exits the mesh at the TGW boundary. This panel shows that Consul can observe and control even that last mile.
+
+**Fault injection on the external path:**
+```bash
+# Inject 30% errors on the external rates service
+kubectl set env deployment/rates ERROR_RATE=0.3 -n default
+
+# Watch "External Error Rate" panel climb to ~30%
+# Watch "Services with High Error Rate" in Service Health also rise
+# (for currency → rates and payments → currency due to cascade)
+
+# Restore
+kubectl set env deployment/rates ERROR_RATE=0 -n default
+```
+
+---
+
+### Dashboard Quick Reference
+
+| Dashboard | Open when you need to… | Primary datasource |
+|-----------|------------------------|-------------------|
+| **Service Health** | Find which service is failing right now | Prometheus |
+| **Consul Service Health** | Check if Consul itself is healthy | Prometheus |
+| **Service-to-Service Traffic** | See overall mesh traffic + traces + topology map | Prometheus + Jaeger |
+| **Envoy Access Logs** | Read individual request logs, debug specific failures | Loki |
+| **Consul Gateways** | Monitor the API Gateway entry point or Terminating Gateway external path | Prometheus |
+
+### Accessing Dashboards
+
+**Kubernetes (after `task k8s:up`):**
+
+```bash
+kubectl port-forward svc/grafana 3000:3000 -n observability &
+open http://localhost:3000   # admin / admin
+# → Dashboards → Consul Observability → pick a dashboard
+```
+
+**Docker Compose (after `task docker:up`):**
+
+```bash
+open http://localhost:3000   # admin / admin, no port-forward needed
+```
 
 ---
 

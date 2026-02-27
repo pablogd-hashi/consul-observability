@@ -38,10 +38,12 @@ tasks:
         echo "  API Gateway:   http://localhost:21001/"
 
   docker:down:
-    desc: "Stop Docker Compose (keep volumes)"
+    desc: "Stop Docker Compose and remove orphaned containers (volumes are kept)"
     dir: docker
     cmds:
-      - docker compose down
+      - echo "Stopping Docker Compose stack..."
+      - docker compose down --remove-orphans
+      - echo "✓ Done. Volumes are preserved. Run 'task docker:up' to restart."
 
   # ── Kubernetes ─────────────────────────────────────────────────────────────
 
@@ -112,7 +114,7 @@ tasks:
           echo "║          Consul Observability Demo — Kubernetes              ║"
           echo "╠══════════════════════════════════════════════════════════════╣"
           echo "║  App (web service)  http://localhost:9090  (port-forward)    ║"
-          echo "║  API Gateway        http://localhost:8080  (NodePort 30004)  ║"
+          echo "║  API Gateway        http://localhost:18080  (NodePort 30004) ║"
           echo "║  Consul UI          http://localhost:8500  (port-forward)    ║"
           echo "║  Grafana            http://localhost:3000  (admin/admin)     ║"
           echo "║  Jaeger             http://localhost:16686 (port-forward)    ║"

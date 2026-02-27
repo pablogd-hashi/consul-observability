@@ -6,11 +6,26 @@ The demo app is [fake-service](https://github.com/nicholasjackson/fake-service),
 
 ---
 
+## Prerequisites
+
+| Tool | Min version | Install |
+|------|-------------|---------|
+| Docker | 24 | https://docs.docker.com/get-docker/ |
+| kind | 0.20 | https://kind.sigs.k8s.io/docs/user/quick-start/ |
+| kubectl | 1.28 | https://kubernetes.io/docs/tasks/tools/ |
+| Helm | 3.13 | https://helm.sh/docs/intro/install/ |
+| Task | 3.x | https://taskfile.dev/installation/ |
+| consul CLI | any | Optional — used for gossip key generation; `openssl` is used as a fallback if missing |
+
+> **Docker Compose** is bundled with Docker Desktop. The Kubernetes path uses [kind](https://kind.sigs.k8s.io/) (Kubernetes in Docker) — no cloud account needed.
+
+---
+
 ## Service topology
 
 ```
 [client]
-   └─► API Gateway :21001 (Docker) / :8080 (K8s)
+   └─► API Gateway :21001 (Docker) / :18080 (K8s)
          └─► web :9090
                └─► api :9090
                      ├─► payments :9090
@@ -104,7 +119,7 @@ bash scripts/kind-setup.sh
 ```
 
 The script:
-1. Creates a kind cluster with host port mappings (including port 8080 → API Gateway NodePort 30004)
+1. Creates a kind cluster with host port mappings (including port 18080 → API Gateway NodePort 30004)
 2. Pre-pulls images into the kind node
 3. Installs Gateway API CRDs (required for Consul API Gateway)
 4. Installs Consul via Helm (ACLs, TLS, Connect inject, API Gateway, Terminating Gateway)
@@ -130,7 +145,7 @@ kubectl port-forward svc/web          9090:9090  -n default       &
 
 | Service | URL | Notes |
 |---------|-----|-------|
-| App (API Gateway) | http://localhost:8080 | NodePort 30004, no port-forward needed |
+| App (API Gateway) | http://localhost:18080 | NodePort 30004, no port-forward needed |
 | App (web direct) | http://localhost:9090 | Port-forward required |
 | Consul UI | http://localhost:8500 | Port-forward required |
 | Grafana | http://localhost:3000 | admin / admin |
@@ -149,12 +164,65 @@ kind delete cluster --name consul-observability
 
 ## Gateways
 
+### Architecture overview (Kubernetes)
+
+Since **Consul 1.14**, client agents are no longer deployed on every node. Instead, `consul-dataplane` is injected as a sidecar container directly into each application pod. It embeds Envoy and registers the pod into the Consul catalog, talking directly to the Consul server over gRPC (xDS). There is no client DaemonSet.
+
+| Component | Role | Where it runs |
+|-----------|------|---------------|
+| Consul server | Raft consensus, catalog, ACLs, config entries | `consul` namespace StatefulSet |
+| `consul-dataplane` sidecar | Envoy proxy + pod registration | injected into every app pod (`default` ns) |
+| API Gateway | North-south Envoy pod | `consul` namespace Deployment |
+| Terminating Gateway | Mesh-exit Envoy pod | `consul` namespace Deployment |
+
+Gateway API CRDs (including `TCPRoute` from the experimental channel) are installed and managed by the Consul Helm chart via `connectInject.apiGateway.manageExternalCRDs: true` — no manual CRD installation needed.
+
+Transparent proxy (`connectInject.transparentProxy.defaultEnabled: true`) intercepts all pod egress via iptables rules injected by the Consul CNI plugin, so services can reach upstreams using plain DNS names (e.g. `http://rates:9090`) without explicit upstream annotations.
+
+### Architecture diagram
+
+```
+                  ┌─────────────────────────────────────────────────────────────┐
+ [external        │                   Consul Service Mesh                       │
+  client]         │                                                              │
+     │            │   ┌─────────────────────────────────────────────────────┐   │
+     ▼            │   │  default namespace                                  │   │
+ ┌──────────┐     │   │                                                     │   │
+ │   API    │─────┼──►│  web ──► api ──►  payments ──► currency ───────────┼───┼──┐
+ │ Gateway  │     │   │               └──► cache                           │   │  │
+ │  :21001  │     │   └─────────────────────────────────────────────────────┘   │  │
+ │  :18080  │     │                                                              │  │
+ │          │     │   ┌──────────────────────────────────────────────────────┐   │  │
+ │ N-S entry│     │   │  Terminating Gateway                                 │◄──┼──┘
+ │ rate-lim.│     │   │   mTLS terminates here                               │   │
+ └──────────┘     │   │   plain HTTP on last mile to rates                   │   │
+                  │   └─────────────────────────────────┬────────────────────┘   │
+                  └─────────────────────────────────────┼──────────────────────┘
+                                                        │
+                                                        ▼
+                                               ┌─────────────────┐
+                                               │  rates  :9090   │
+                                               │  (external,     │
+                                               │  no sidecar,    │
+                                               │  no mTLS)       │
+                                               └─────────────────┘
+
+  Key:
+    API Gateway   — north-south Envoy; single entry for all external traffic
+    Sidecar       — east-west Envoy injected per pod; enforces mTLS + intentions
+    Term. Gateway — controlled egress; the only exit path to external services
+
+  Ports:
+    Docker  →  API GW :21001  |  TGW :9190  |  sidecars :20200 (metrics)
+    K8s     →  API GW :18080  |  TGW cluster-internal  |  sidecars :20200
+```
+
 ### API Gateway
 
 The API Gateway is the **north-south entry point** — external clients send traffic here, and the gateway routes it into the mesh.
 
 - **Docker**: static Envoy JSON config (consistent with the sidecar pattern used in this demo). Listener on `:21001`. Includes a local rate limiter (100 req/s fill rate, burst 200 — requests above this return HTTP 429).
-- **K8s**: managed by the Consul Helm chart via the [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/). `GatewayClass + Gateway + HTTPRoute` CRDs route traffic to the `web` service. Exposed as NodePort 30004 → `localhost:8080`.
+- **K8s**: managed by the Consul Helm chart via the [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/). `GatewayClass + Gateway + HTTPRoute` CRDs route traffic to the `web` service. Exposed as NodePort 30004 → `localhost:18080`.
 
 **How it differs from a sidecar:**
 
@@ -178,6 +246,56 @@ Traffic flow: `payments → currency → TGW → rates (external)`. mTLS termina
 `rates` is an external service — it runs as a plain fake-service container **without** Consul Connect inject. It simulates a third-party pricing API that the mesh cannot directly reach (must go through the Terminating Gateway).
 
 Fault injection works on `rates` the same way as any other service. Set `RATES_ERROR_RATE` in `docker/.env` (Docker) or `kubectl set env deployment/rates ERROR_RATE=0.3` (K8s) to inject errors on the external call.
+
+---
+
+## Circuit Breakers
+
+Circuit breaking in the Consul service mesh is implemented by **Envoy outlier detection**. Each sidecar monitors the health of its upstream backends and automatically ejects misbehaving ones from the load balancing pool for a configurable period.
+
+### How it works
+
+```
+payments (sidecar Envoy)
+   │
+   ├──► currency-pod-A  ✓  (healthy)
+   ├──► currency-pod-B  ✗  (returning 5xx)  ← ejected after N consecutive failures
+   └──► currency-pod-C  ✓  (healthy)
+```
+
+When a backend returns **N consecutive 5xx responses** (default: 5), Envoy marks it as ejected — requests are no longer sent to it. After a base ejection interval (default: 30 s) the backend is given a chance to recover. If it's still unhealthy, the ejection duration doubles (exponential backoff).
+
+**Why this matters:** Without circuit breaking, a failing backend causes every caller to wait for the full request timeout before returning an error. With circuit breaking, Envoy fast-fails at the proxy layer — callers get immediate 503s with near-zero latency instead of a cascade of slow timeouts.
+
+### Key metrics (Envoy outlier detection)
+
+| Metric | Type | What it shows |
+|--------|------|---------------|
+| `envoy_cluster_outlier_detection_ejections_active` | Gauge | Backends currently ejected (circuit is **open**) |
+| `envoy_cluster_outlier_detection_ejections_consecutive_5xx` | Gauge | Ejections caused by consecutive 5xx errors |
+| `envoy_cluster_outlier_detection_success_rate_ejections` | Gauge | Ejections caused by below-average success rate |
+
+### Grafana dashboard
+
+The **Service Health** dashboard has a **Circuit Breaker** section with two panels:
+
+- **Active Circuit Breakers** — timeseries showing currently ejected hosts per service pair (`local_cluster → consul_destination_service`)
+- **Circuit Breakers Triggered** — bar gauge showing peak consecutive 5xx ejections per service over the selected time range
+
+### Demo: triggering a circuit breaker
+
+```bash
+# Inject 100% errors on the payments service
+kubectl set env deployment/payments ERROR_RATE=1.0 -n default
+
+# Within seconds Envoy ejects payments from the upstream pool:
+#   - Callers (api) get 503s immediately (no waiting for timeout)
+#   - "Active Circuit Breakers" panel goes to 1
+#   - Request latency drops to near-zero (fast-fail, no upstream wait)
+
+# Restore
+kubectl set env deployment/payments ERROR_RATE=0 -n default
+```
 
 ---
 
@@ -345,13 +463,24 @@ task k8s:down    # Delete kind cluster + stop port-forwards
 
 ## Troubleshooting
 
-### Grafana shows "No data" for the node graph (K8s)
+### Grafana shows "No data" for the Service Dependency Map (K8s)
 
-The Service Dependency Map uses `traces_service_graph_request_total` derived from traces by the OTel servicegraph connector. Wait ~60 seconds after cluster startup for traces to flow and the connector to emit metrics. Verify with:
+Both the node and edge queries use `traces_service_graph_request_total` emitted by the OTel Collector's `servicegraph` connector. There is no dependency on Envoy metric scraping — the graph is entirely trace-driven:
+
+- **Nodes** (Query A): unique services derived via `label_replace(..., "node_id", server)` — appears once a service receives its first span
+- **Edges** (Query B): `client → server` pairs — appears once two services exchange a traced request
+
+Wait ~60 seconds for the load generator to drive enough traffic for spans to flow through Envoy → OTel → servicegraph → Prometheus. Verify the metric exists:
 
 ```bash
 kubectl port-forward svc/otel-collector 8889:8889 -n observability &
 curl -s http://localhost:8889/metrics | grep traces_service_graph
+# Expected: traces_service_graph_request_total{client="web",server="api",...}
+```
+
+If the metric is missing, check that Envoy sidecars are sending Zipkin traces:
+```bash
+kubectl logs -n observability deploy/otel-collector | grep -i "zipkin\|spans\|error"
 ```
 
 ### Grafana shows "No data" for Envoy Access Logs panels (K8s)
@@ -374,9 +503,9 @@ kubectl logs -n observability deploy/otel-collector | grep -i zipkin
 
 ### API Gateway not accessible (K8s)
 
-The API Gateway is exposed on NodePort 30004 → `localhost:8080` (no port-forward needed for kind). If the cluster was created before this branch, recreate it with `task k8s:down && task k8s:up` to get the new kind port mapping.
+The API Gateway is exposed on NodePort 30004 → `localhost:18080` (no port-forward needed for kind). If the cluster was created before this branch, recreate it with `task k8s:down && task k8s:up` to get the new kind port mapping.
 
 ```bash
 kubectl get svc api-gateway -n consul
-curl -s http://localhost:8080/
+curl -s http://localhost:18080/
 ```

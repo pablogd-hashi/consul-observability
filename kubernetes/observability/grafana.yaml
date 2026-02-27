@@ -612,7 +612,7 @@ data:
                 "uid": "prometheus"
               },
               "editorMode": "code",
-              "expr": "sum(increase(envoy_cluster_outlier_detection_ejections_consecutive_5xx{consul_destination_service!~\"\", local_cluster!=\"mesh-gateway\"}[$__range])) by (consul_destination_service)",
+              "expr": "sum(max_over_time(envoy_cluster_outlier_detection_ejections_consecutive_5xx{consul_destination_service!~\"\", local_cluster!=\"mesh-gateway\"}[$__range])) by (consul_destination_service)",
               "instant": false,
               "legendFormat": "{{consul_destination_service}}",
               "range": true,
@@ -1240,7 +1240,7 @@ data:
         {
           "id": 8,
           "title": "Service Dependency Map",
-          "description": "Live service topology derived from distributed traces via the OTel servicegraphconnector. Each arrow = active call path, labelled with req/s. Works in both Docker and K8s — all services send Zipkin traces through OTel which derives the graph. Topology: web -> api -> [payments, cache] -> currency.",
+          "description": "Live service topology derived entirely from OTel servicegraph traces. Nodes (Query A) = unique service names extracted from the server label of traces_service_graph_request_total. Edges (Query B) = service-to-service call paths with req/s. Both queries share the same metric so the graph populates together once traces flow (~60s after startup). Topology: web -> api -> [payments, cache] -> currency -> rates (via Terminating Gateway).",
           "type": "nodeGraph",
           "gridPos": { "h": 14, "w": 24, "x": 0, "y": 22 },
           "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -1251,11 +1251,19 @@ data:
           "targets": [
             {
               "datasource": { "type": "prometheus", "uid": "prometheus" },
-              "expr": "sum by (client, server) (rate(traces_service_graph_request_total{client!=\"\",server!=\"\"}[1m]))",
+              "expr": "sum by (node_id) (label_replace(rate(traces_service_graph_request_total{server!=\"\"}[5m]), \"node_id\", \"$1\", \"server\", \"(.+)\"))",
               "format": "table",
               "instant": true,
               "legendFormat": "",
               "refId": "A"
+            },
+            {
+              "datasource": { "type": "prometheus", "uid": "prometheus" },
+              "expr": "sum by (client, server) (rate(traces_service_graph_request_total{client!=\"\",server!=\"\"}[5m]))",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "B"
             }
           ],
           "transformations": [
@@ -1264,9 +1272,12 @@ data:
               "options": {
                 "excludeByName": { "Time": true },
                 "renameByName": {
+                  "node_id": "id",
                   "client": "source",
                   "server": "target",
-                  "Value": "mainStat"
+                  "Value": "mainStat",
+                  "Value #A": "mainStat",
+                  "Value #B": "mainStat"
                 }
               }
             }

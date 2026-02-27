@@ -3,7 +3,7 @@
 # Bootstrap a local kind cluster with the full Consul observability demo.
 # Uses fake-service (nicholasjackson/fake-service) for the demo app topology:
 #   web → api → [payments, cache]  where  payments → currency → rates (via TGW)
-# Entry point: API Gateway (http://localhost:8080/) → web
+# Entry point: API Gateway (http://localhost:18080/) → web
 #
 # Prerequisites:
 #   - kind    (https://kind.sigs.k8s.io)
@@ -58,7 +58,7 @@ nodes:
         hostPort: 9090
         protocol: TCP
       - containerPort: 30004   # API Gateway
-        hostPort: 8080
+        hostPort: 18080
         protocol: TCP
 EOF
 fi
@@ -73,12 +73,6 @@ docker pull -q nicholasjackson/fake-service:v0.26.2 \
 info "Adding Helm repos..."
 helm repo add hashicorp https://helm.releases.hashicorp.com --force-update
 helm repo update
-
-# ── 3.5. Install Kubernetes Gateway API CRDs ─────────────────────────────────
-# Required by Consul API Gateway (values.yaml: apiGateway.enabled: true).
-# Must be installed before the Consul Helm chart.
-info "Installing Kubernetes Gateway API CRDs (v1.1.0)..."
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.1.0/standard-install.yaml
 
 # ── 4. Generate gossip encryption key and store as a Secret ─────────────────
 info "Creating consul namespace and gossip encryption Secret..."
@@ -111,7 +105,10 @@ helm upgrade --install consul hashicorp/consul \
 info "ACL bootstrap token is in Secret 'consul-bootstrap-acl-token' (namespace: $CONSUL_NS)"
 
 # ── 6.5. Apply API Gateway resources ─────────────────────────────────────────
-info "Applying API Gateway resources (GatewayClass, Gateway, HTTPRoute, TerminatingGateway)..."
+# Helm (manageExternalCRDs: true) installs the Gateway API CRDs including TCPRoute.
+# GatewayClass "consul" is created automatically (managedGatewayClass.enabled: true).
+# Only the Gateway listener, HTTPRoute, and TerminatingGateway config need to be applied.
+info "Applying API Gateway resources (Gateway, HTTPRoute, TerminatingGateway)..."
 kubectl apply -f "${REPO_ROOT}/kubernetes/consul/gateway/"
 
 info "Waiting for API Gateway pod to be ready..."
@@ -119,7 +116,7 @@ kubectl wait --for=condition=ready pod -l component=api-gateway \
   -n "$CONSUL_NS" --timeout=120s \
   || warn "API Gateway pod not ready in time — check: kubectl get pods -n $CONSUL_NS"
 
-info "Patching api-gateway Service to NodePort 30004 (maps to localhost:8080)..."
+info "Patching api-gateway Service to NodePort 30004 (maps to localhost:18080)..."
 kubectl patch svc api-gateway -n "$CONSUL_NS" --type='json' \
   -p='[{"op":"replace","path":"/spec/type","value":"NodePort"},{"op":"add","path":"/spec/ports/0/nodePort","value":30004}]' \
   || warn "Could not patch api-gateway NodePort — patch manually if needed"
@@ -190,11 +187,10 @@ echo "╔═══════════════════════�
 info "K8s setup complete!"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo ""
-echo "  Next step — start port-forwards and open the UIs:"
+echo "  Next step — start port-forwards and run the demo:"
 echo ""
-echo "    task k8s:open        # starts all port-forwards + prints URLs"
+echo "    task validate        # health check + print all service URLs"
 echo "    task demo            # interactive fault-injection demo"
-echo "    task demo:open       # open Grafana + Jaeger + Consul in browser"
 echo ""
 echo "  Manual port-forwards:"
 echo "    kubectl port-forward svc/web          9090:9090   -n $DEMO_NS  &"
@@ -204,7 +200,7 @@ echo "    kubectl port-forward svc/jaeger-query 16686:16686 -n $OBS_NS   &"
 echo "    kubectl port-forward svc/prometheus   9091:9090   -n $OBS_NS   &"
 echo ""
 echo "  App:"
-echo "    curl http://localhost:8080/    → API Gateway → web→api→[payments,cache]→currency→rates"
+echo "    curl http://localhost:18080/    → API Gateway → web→api→[payments,cache]→currency→rates"
 echo "    curl http://localhost:9090/    → direct to web (bypass API Gateway)"
 echo ""
 echo "  Grafana dashboards (after port-forward):"
