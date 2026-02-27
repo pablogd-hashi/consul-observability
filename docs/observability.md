@@ -9,8 +9,11 @@ Technical reference for metrics, logs, and distributed tracing in this Consul se
 1. [Architecture](#architecture)
 2. [Metrics](#metrics)
    - [Enabling Metrics](#enabling-metrics)
+   - [Scrape Job Summary](#scrape-job-summary)
    - [Consul Server Metrics](#consul-server-metrics)
+   - [Consul Dataplane Sidecar Metrics](#consul-dataplane-sidecar-metrics)
    - [Envoy Sidecar Metrics](#envoy-sidecar-metrics)
+   - [OTel Servicegraph Metrics](#otel-servicegraph-metrics)
    - [OTel Collector Self-Metrics](#otel-collector-self-metrics)
 3. [Logs](#logs)
    - [Envoy Access Logs](#envoy-access-logs)
@@ -168,162 +171,304 @@ And `docker/prometheus/prometheus.yml` directly scrapes:
 
 ---
 
+### Scrape Job Summary
+
+| Prometheus job | Target | Port / Path | Key metrics yielded |
+|----------------|--------|-------------|---------------------|
+| `consul-server` | `consul.consul.svc` | `:8500/v1/agent/metrics?format=prometheus` | `consul_raft_*`, `consul_catalog_*`, `consul_serf_*`, `consul_acl_*`, `consul_client_*`, `consul_state_*`, `consul_autopilot_*`, `consul_runtime_*` |
+| `envoy-sidecars` | All pods with `prometheus.io/scrape="true"` annotation | `:20200/stats/prometheus` | `envoy_cluster_*`, `envoy_http_*`, `envoy_listener_*`, `envoy_server_*`, `envoy_tracing_*`, `consul_dataplane_*` |
+| `api-gateway` | API Gateway Envoy pod | `:20200/stats/prometheus` | Same as envoy-sidecars; filtered by `job="api-gateway"` in dashboard queries |
+| `terminating-gateway` | Terminating Gateway Envoy pod | `:20200/stats/prometheus` | `envoy_cluster_upstream_*`; filtered by `job="terminating-gateway"` |
+| `otel-collector` | `otel-collector.observability.svc` | `:8888/metrics` | `otelcol_receiver_*`, `otelcol_exporter_*`, `otelcol_processor_*`, `otelcol_connector_*`, `otelcol_process_*` |
+| `servicegraph` | `otel-collector.observability.svc` | `:8889/metrics` | `traces_service_graph_*` derived from Zipkin spans |
+
+> **Label note:** Prometheus uses `honor_labels: false` by default, so the `job` label is always overwritten with the scrape job name. Metrics re-exported through the OTel Collector's Prometheus exporter on port `:8889` carry `job="servicegraph"` — not whatever job label the OTel receiver set internally.
+
+---
+
 ### Consul Server Metrics
 
-Exposed at `/v1/agent/metrics?format=prometheus`. Consul prefixes all its metrics with `consul_`.
+Exposed at `/v1/agent/metrics?format=prometheus` on `consul.consul.svc:8500`. All metrics are prefixed with `consul_`.
+
+#### Cluster State (Point-in-Time)
+
+These gauges snapshot the current state of the Consul cluster. Query them directly — no `rate()` needed.
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_members_servers` | Gauge | Number of server agents in the datacenter | Consul Service Health → LAN Members |
+| `consul_members_clients` | Gauge | Number of client / dataplane agents | Consul Service Health → LAN Members |
+| `consul_state_service_instances` | Gauge | Total registered service instances | Consul Service Health → Registered Service Instances |
+| `consul_state_billable_service_instances` | Gauge | Billable service instances (excludes Consul-internal services) | Consul Service Health → Service Instances |
+| `consul_state_services` | Gauge | Number of unique service names registered | — |
+| `consul_state_nodes` | Gauge | Number of nodes in the catalog | — |
+| `consul_state_connect_instances` | Gauge | Connect-capable (mesh) service instances | — |
+| `consul_state_config_entries` | Gauge | Config entries (ProxyDefaults, ServiceDefaults, ServiceIntentions, …) | — |
+| `consul_state_kv_entries` | Gauge | Key/value store entries | — |
+| `consul_autopilot_healthy` | Gauge | 1 = cluster is healthy per autopilot; 0 = degraded | Consul Service Health → Autopilot Healthy |
+| `consul_autopilot_failure_tolerance` | Gauge | Server failures the cluster can absorb and still maintain quorum | — |
+| `consul_agent_tls_cert_expiry` | Gauge | Seconds until this agent's TLS certificate expires | — |
 
 #### Raft / Cluster Health
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `consul_raft_leader` | Gauge | 1 if this node is the Raft leader, 0 otherwise |
-| `consul_raft_peers` | Gauge | Number of Raft peers (including leader) |
-| `consul_raft_commitTime_sum` | Counter | Total time (ms) spent committing log entries |
-| `consul_raft_commitTime_count` | Counter | Number of Raft log commits |
-| `consul_raft_leader_lastContact_sum` | Counter | Milliseconds since leader last had contact with a follower |
-| `consul_raft_state_leader` | Counter | Number of times this node became leader |
-| `consul_raft_state_follower` | Counter | Number of times this node became a follower |
-| `consul_raft_replication_appendEntries_rpc_sum` | Counter | Time for AppendEntries RPC calls |
+Raft is the consensus protocol keeping Consul servers in sync. These metrics reveal leader stability, replication lag, and throughput.
 
-**Key alerts:** `consul_raft_leader = 0` means no leader (split-brain or network partition). `consul_raft_leader_lastContact > 500ms` indicates replication lag.
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_raft_applied_index` | Gauge | Last log index applied to the FSM (state machine) | Consul Service Health → Raft Applied Index |
+| `consul_raft_last_index` | Gauge | Latest log entry index in the leader's log | Consul Service Health → Raft Applied Index |
+| `consul_raft_apply` | Counter | Raft log entries committed | — |
+| `consul_raft_barrier` | Counter | Raft barrier operations (used to flush pending writes) | — |
+| `consul_raft_commitTime` | Summary | Time (ms) to commit a log entry — high values indicate leader overload | — |
+| `consul_raft_commitTime_sum` / `_count` | Counter | Sum/count for commitTime summary | — |
+| `consul_raft_leader_lastContact` | Summary | Milliseconds since the leader last contacted a follower | — |
+| `consul_raft_leader_lastContact_sum` / `_count` | Counter | Sum/count for lastContact summary | — |
+| `consul_raft_leader_dispatchLog` | Summary | Time (ms) to dispatch a log entry to followers | — |
+| `consul_raft_leader_oldestLogAge` | Gauge | Age (s) of the oldest uncompacted log entry | — |
+| `consul_raft_fsm_apply` | Summary | Time (ms) for the FSM to apply a single log entry | — |
+| `consul_raft_state_leader` | Counter | Times this node became Raft leader | — |
+| `consul_raft_state_follower` | Counter | Times this node became a follower | — |
+| `consul_raft_state_candidate` | Counter | Times this node started an election | — |
+| `consul_raft_transition_heartbeat_timeout` | Counter | Leader heartbeat timeouts — indicates network instability | — |
+| `consul_raft_snapshot_persist` | Summary | Time to persist a Raft snapshot | — |
+| `consul_raft_thread_main_saturation` | Summary | Fraction (0–1) of time the main Raft thread is busy — >0.8 = saturated | — |
+| `consul_raft_thread_fsm_saturation` | Summary | Fraction (0–1) of time the FSM apply thread is busy | — |
+| `consul_raft_verify_leader` | Counter | Leadership verification checks — spikes indicate instability | — |
+| `consul_raft_wal_log_appends` | Counter | WAL (write-ahead log) append operations | — |
+| `consul_raft_wal_log_entries_written` | Counter | Log entries written to WAL | — |
+| `consul_raft_wal_segment_rotations` | Counter | WAL segment rotations (file rollover) | — |
+| `consul_raft_wal_last_segment_age_seconds` | Gauge | Age of the current WAL segment | — |
 
-#### Service Catalog
+**Key thresholds:**
+- `consul_raft_last_index - consul_raft_applied_index > 0` sustained → FSM is lagging behind the leader
+- `consul_raft_leader_lastContact > 200 ms` → replication lag; `> 500 ms` → potential split-brain risk
+- `consul_raft_state_candidate` increasing → repeated leader elections, indicates instability
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `consul_catalog_register` | Counter | Service registrations processed |
-| `consul_catalog_deregister` | Counter | Service deregistrations processed |
-| `consul_catalog_service_query` | Counter | Catalog service queries served |
-| `consul_catalog_service_query_tag` | Counter | Tag-filtered catalog queries |
-| `consul_health_service_query` | Counter | Health endpoint queries (used by sidecars for discovery) |
-| `consul_health_service_not_found` | Counter | Queries for services that do not exist |
+#### Client API Activity
+
+Tracks calls to the Consul HTTP API. Useful for understanding catalog registration churn and sidecar-driven lookups.
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_client_api_success_catalog_register` | Counter | Successful `PUT /v1/catalog/register` API calls | Consul Service Health → Catalog API Activity |
+| `consul_client_api_success_catalog_deregister` | Counter | Successful `PUT /v1/catalog/deregister` API calls | Consul Service Health → Catalog API Activity |
+| `consul_client_api_catalog_register` | Counter | All catalog register attempts (success + error) | — |
+| `consul_client_api_error_catalog_service_nodes` | Counter | Failed catalog service-node queries | — |
+| `consul_client_api_success_catalog_service_nodes` | Counter | Successful catalog service-node queries (sidecar endpoint discovery) | — |
+| `consul_client_rpc` | Counter | Total RPC calls the server made to process API requests | Consul Service Health → Consul RPC Request Rate |
+| `consul_client_rpc_exceeded` | Counter | RPC calls that hit rate limits | — |
+| `consul_client_rpc_failed` | Counter | Failed RPC calls | — |
+
+#### Catalog & Health
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_catalog_register` | Summary | Time (ms) to process a service registration | — |
+| `consul_catalog_deregister` | Summary | Time (ms) to process a service deregistration | — |
+| `consul_catalog_service_query` | Counter | Catalog service queries served | — |
+| `consul_catalog_connect_query` | Counter | Connect-capable service queries (sidecar discovery) | — |
+| `consul_catalog_service_not_found` | Counter | Queries for services that do not exist | — |
+| `consul_catalog_connect_not_found` | Counter | Connect service queries that returned no results | — |
 
 #### Membership / Gossip
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `consul_members_clients` | Gauge | Number of client agents in the datacenter |
-| `consul_members_servers` | Gauge | Number of server agents in the datacenter |
-| `consul_serf_member_join` | Counter | Members joining the gossip pool |
-| `consul_serf_member_leave` | Counter | Members leaving the gossip pool |
-| `consul_serf_member_failed` | Counter | Members declared failed (no heartbeat) |
-| `consul_serf_msgs_sent_sum` | Counter | Gossip messages transmitted |
-| `consul_serf_queue_Intent_sum` | Gauge | Pending gossip intents queued — spikes indicate gossip backpressure |
+Consul uses the Serf library for cluster membership via gossip. These metrics reveal membership churn and gossip backpressure.
 
-#### ACL & RPC
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_serf_member_join` | Counter | Members joining the gossip pool | — |
+| `consul_serf_events` | Counter | Gossip events processed (joins, leaves, failures) | — |
+| `consul_serf_queue_Event` | Summary | Gossip event queue depth — spikes indicate processing backpressure | — |
+| `consul_serf_queue_Intent` | Summary | Gossip intent queue depth — spikes indicate membership state divergence | — |
+| `consul_serf_queue_Query` | Summary | Gossip query queue depth | — |
+| `consul_serf_snapshot_appendLine` | Summary | Time to write a line to the gossip snapshot file | — |
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `consul_acl_ResolveToken` | Summary | Time to resolve an ACL token (latency) |
-| `consul_rpc_query` | Counter | RPC queries handled |
-| `consul_rpc_request` | Counter | Total RPC requests |
-| `consul_rpc_cross_dc_query` | Counter | Cross-datacenter RPC queries |
+#### ACL
 
-#### Go Runtime (present on all Consul nodes)
+ACL token resolution happens on every Consul RPC call. Latency here directly affects all control plane operations.
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `consul_runtime_alloc_bytes` | Gauge | Bytes allocated and in use by Go heap |
-| `consul_runtime_heap_objects` | Gauge | Objects on the Go heap |
-| `consul_runtime_num_goroutines` | Gauge | Active goroutines — unexpected growth indicates goroutine leaks |
-| `consul_runtime_total_gc_pause_ns` | Counter | Cumulative GC pause time in nanoseconds |
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_acl_ResolveToken` | Summary | Time (ms) to resolve an ACL token | — |
+| `consul_acl_ResolveToken_sum` / `_count` | Counter | Sum/count for ResolveToken | — |
+| `consul_acl_token_cache_hit` | Counter | ACL token lookups served from cache (fast path) | — |
+| `consul_acl_token_cache_miss` | Counter | ACL token lookups that required full resolution | — |
+| `consul_acl_blocked_service_registration` | Counter | Service registrations blocked by ACL policy | — |
+| `consul_acl_blocked_check_registration` | Counter | Health check registrations blocked by ACL policy | — |
+| `consul_acl_login` | Summary | Time to complete a Consul login via auth method (token exchange) | — |
+
+#### RPC
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_rpc_query` | Counter | RPC read queries handled | — |
+| `consul_rpc_request` | Counter | Total RPC requests | — |
+| `consul_rpc_request_error` | Counter | RPC requests that returned an error | — |
+| `consul_rpc_consistentRead` | Summary | Time (ms) for a strongly-consistent linearizable read | — |
+| `consul_rpc_queries_blocking` | Gauge | Blocking RPC queries currently in flight (long-poll watchers) | — |
+| `consul_rpc_cross_dc` | Counter | Cross-datacenter RPC calls | — |
+| `consul_rpc_rate_limit_exceeded` | Counter | RPC calls rate-limited by the server | — |
+| `consul_rpc_accept_conn` | Counter | New RPC connections accepted | — |
+
+#### Go Runtime
+
+Present on all Consul server pods. Reflects Go runtime health.
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_runtime_alloc_bytes` | Gauge | Bytes allocated and in use by the Go heap | Consul Service Health → Consul Runtime Memory |
+| `consul_runtime_sys_bytes` | Gauge | Total bytes obtained from the OS by the Go runtime | Consul Service Health → Consul Runtime Memory |
+| `consul_runtime_heap_objects` | Gauge | Objects on the Go heap — high values indicate GC pressure | — |
+| `consul_runtime_num_goroutines` | Gauge | Active goroutines — unexpected growth = goroutine leak | Consul Service Health → Goroutines |
+| `consul_runtime_gc_pause_ns` | Summary | GC pause duration in nanoseconds | — |
+
+---
+
+### Consul Dataplane Sidecar Metrics
+
+Every pod injected with `consul.hashicorp.com/connect-inject: "true"` runs a `consul-dataplane` sidecar. This process manages the Envoy proxy and communicates with the Consul server over gRPC/xDS. Its metrics are prefixed `consul_dataplane_` and are scraped from `:20200` as part of the `envoy-sidecars` job.
+
+#### Connectivity
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_dataplane_consul_connected` | Gauge | 1 = live gRPC connection to the Consul server; 0 = disconnected | — |
+| `consul_dataplane_envoy_connected` | Gauge | 1 = live xDS connection to the local Envoy process; 0 = disconnected | — |
+| `consul_dataplane_connection_errors` | Counter | Failed connection attempts to the Consul server | — |
+| `consul_dataplane_connect_duration` | Summary | Time to establish the initial gRPC connection to Consul at startup | — |
+| `consul_dataplane_discover_servers_duration` | Summary | Time to discover Consul server addresses at startup | — |
+| `consul_dataplane_login_duration` | Summary | Time to authenticate and obtain an ACL token from Consul | — |
+
+> **What to watch:** `consul_dataplane_consul_connected = 0` or `consul_dataplane_envoy_connected = 0` on any pod means that sidecar is cut off from the control plane. Traffic may continue using the last known xDS snapshot, but no configuration updates (new intentions, service routing changes) will take effect until reconnection.
+
+#### Runtime
+
+Standard Go process metrics emitted by the consul-dataplane binary itself.
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `consul_dataplane_runtime_alloc_bytes` | Gauge | Go heap bytes in use | — |
+| `consul_dataplane_runtime_num_goroutines` | Gauge | Active goroutines in consul-dataplane | — |
+| `consul_dataplane_runtime_total_gc_pause_ns` | Counter | Cumulative GC pause time | — |
+| `consul_dataplane_go_memstats_heap_alloc_bytes` | Gauge | Heap bytes allocated (Go standard metric) | — |
+| `consul_dataplane_go_goroutines` | Gauge | Goroutines (Go standard prometheus metric) | — |
 
 ---
 
 ### Envoy Sidecar Metrics
 
-Exposed at `:20200/stats/prometheus` on each sidecar. Consul connect injects labels `consul_source_service` and `consul_destination_service` onto cluster-level metrics, enabling cross-service queries. All Envoy metrics are prefixed with `envoy_`.
+Exposed at `:20200/stats/prometheus` on every consul-dataplane injected pod and on gateway pods. All metrics are prefixed with `envoy_`. The `envoy-sidecars` Prometheus job scrapes all pods with the `prometheus.io/scrape="true"` annotation set by the Helm chart.
 
-#### Labels on Envoy Metrics
+Consul injects labels into cluster-level metrics that enable cross-service queries:
 
-Envoy exposes metrics with tag-extracted labels. Key labels for service mesh:
-
-| Label | Source | Example |
-|-------|--------|---------|
-| `local_cluster` | The name of this service | `nginx` |
-| `consul_source_service` | Source service (where traffic originates) | `nginx` |
-| `consul_destination_service` | Destination service (upstream) | `frontend` |
-| `consul_destination_service_subset` | Traffic subset | `v2` |
-| `envoy_cluster_name` | Full Envoy cluster name | `frontend.default.dc1.internal...consul` |
-
-**Cross-service queries** use `consul_source_service` and `consul_destination_service` because Envoy's cluster-level metrics are tagged with both the calling and the called service. Example: to see all traffic from `nginx` to `frontend`:
-
-```promql
-envoy_cluster_upstream_rq_total{
-  consul_source_service="nginx",
-  consul_destination_service="frontend"
-}
-```
+| Label | Meaning | Example |
+|-------|---------|---------|
+| `local_cluster` | The service this sidecar belongs to | `web` |
+| `consul_source_service` | Service generating traffic (the caller) | `web` |
+| `consul_destination_service` | Service receiving traffic (the callee) | `api` |
+| `consul_destination_service_subset` | Traffic subset / canary variant | `v2` |
+| `envoy_cluster_name` | Full internal Envoy cluster name | `api.default.dc1.internal…consul` |
 
 #### Proxy / Server Health
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_server_live` | Gauge | 1 if Envoy is running and serving traffic |
-| `envoy_server_uptime` | Gauge | Seconds since Envoy started |
-| `envoy_server_state` | Gauge | 0=live, 1=draining, 2=pre-initializing, 3=initializing |
-| `envoy_server_hot_restart_epoch` | Gauge | Hot restart generation (0 = never hot-restarted) |
-| `envoy_server_total_connections` | Gauge | Total open connections (all listeners) |
-| `envoy_server_parent_connections` | Gauge | Connections from the previous hot-restart epoch |
-| `envoy_server_memory_allocated` | Gauge | Bytes allocated by Envoy process |
-| `envoy_server_memory_heap_size` | Gauge | Total heap size in bytes |
-| `envoy_server_concurrency` | Gauge | Number of worker threads |
-| `envoy_server_version` | Gauge | Envoy version as a numeric value |
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_server_live` | Gauge | 1 = Envoy is running; 0 = pre-initializing or draining | — |
+| `envoy_server_state` | Gauge | 0=live, 1=draining, 2=pre-initializing, 3=initializing | — |
+| `envoy_server_uptime` | Gauge | Seconds since this Envoy process started | — |
+| `envoy_server_concurrency` | Gauge | Number of Envoy worker threads | — |
+| `envoy_server_total_connections` | Gauge | All open TCP connections across all listeners | — |
+| `envoy_server_memory_allocated` | Gauge | Bytes currently allocated by Envoy's allocator | — |
+| `envoy_server_memory_heap_size` | Gauge | Total heap size reserved by the OS for Envoy | — |
+| `envoy_server_memory_physical_size` | Gauge | Physical RAM consumed by the Envoy process | — |
+| `envoy_server_days_until_first_cert_expiring` | Gauge | Days until the nearest mTLS leaf certificate expires — alert if <30 | — |
+| `envoy_server_hot_restart_epoch` | Gauge | Hot restart generation (0 = never hot-restarted) | — |
+| `envoy_server_version` | Gauge | Envoy version encoded as an integer | — |
+| `envoy_server_main_thread_watchdog_miss` | Counter | Main thread watchdog misses — indicates event loop saturation | — |
+| `envoy_server_worker_watchdog_miss` | Counter | Worker thread watchdog misses | — |
 
-#### HTTP Downstream (inbound to this sidecar)
+#### HTTP Downstream (Inbound)
 
-These metrics describe traffic arriving at the sidecar from the Consul mesh inbound listener.
+Traffic arriving at this sidecar from within the mesh. In the Consul service mesh, inbound traffic arrives through Envoy's public listener and is routed to the local application container. For the **API Gateway**, all north-south HTTP traffic appears here.
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_http_downstream_rq_total` | Counter | Total HTTP/1.x requests received |
-| `envoy_http_downstream_rq_http2_total` | Counter | HTTP/2 requests received |
-| `envoy_http_downstream_rq_http3_total` | Counter | HTTP/3 requests received |
-| `envoy_http_downstream_rq_active` | Gauge | Requests currently being processed |
-| `envoy_http_downstream_rq_time_bucket` | Histogram | Downstream request latency |
-| `envoy_http_downstream_cx_total` | Counter | Total downstream connections established |
-| `envoy_http_downstream_cx_active` | Gauge | Active downstream connections |
-| `envoy_http_downstream_rq_1xx` | Counter | 1xx responses |
-| `envoy_http_downstream_rq_2xx` | Counter | 2xx responses |
-| `envoy_http_downstream_rq_4xx` | Counter | 4xx responses (client errors) |
-| `envoy_http_downstream_rq_5xx` | Counter | 5xx responses (server errors) |
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_http_downstream_rq_total` | Counter | All HTTP requests received by this sidecar | Gateways → API GW Request Rate |
+| `envoy_http_downstream_rq_http1_total` | Counter | HTTP/1.1 requests received | — |
+| `envoy_http_downstream_rq_http2_total` | Counter | HTTP/2 requests received | — |
+| `envoy_http_downstream_rq_active` | Gauge | Requests currently in flight (downstream perspective) | — |
+| `envoy_http_downstream_rq_time_bucket` | Histogram | End-to-end request latency including upstream wait time | Gateways → API GW P99 Latency |
+| `envoy_http_downstream_rq_time_sum` / `_count` | Counter | Sum/count for downstream latency histogram | — |
+| `envoy_http_downstream_rq_xx` | Counter | Requests by response class; label `envoy_response_code_class` = 1/2/3/4/5 | — |
+| `envoy_http_downstream_rq_2xx` | Counter | 2xx success responses | Gateways → API GW Request Rate by Status |
+| `envoy_http_downstream_rq_4xx` | Counter | 4xx client error responses | Gateways → API GW Request Rate by Status |
+| `envoy_http_downstream_rq_5xx` | Counter | 5xx server error responses | Gateways → API GW Error Rate |
+| `envoy_http_downstream_rq_timeout` | Counter | Requests that timed out waiting for the upstream | — |
+| `envoy_http_downstream_rq_idle_timeout` | Counter | Requests closed due to stream idle timeout | — |
+| `envoy_http_downstream_rq_header_timeout` | Counter | Requests where headers took too long to arrive | — |
+| `envoy_http_downstream_rq_overload_close` | Counter | Requests rejected by Envoy's overload manager | — |
+| `envoy_http_downstream_rq_too_large` | Counter | Requests rejected because the body exceeded the buffer limit | — |
+| `envoy_http_downstream_cx_total` | Counter | Total downstream connections established | — |
+| `envoy_http_downstream_cx_active` | Gauge | Active downstream connections | — |
+| `envoy_http_downstream_cx_ssl_total` | Counter | TLS-wrapped connections — should equal `cx_total` in an mTLS mesh | — |
+| `envoy_http_downstream_cx_protocol_error` | Counter | Connections closed due to HTTP protocol errors | — |
+| `envoy_http_downstream_cx_destroy_local` | Counter | Connections torn down by local Envoy | — |
+| `envoy_http_downstream_cx_destroy_remote` | Counter | Connections torn down by the remote peer | — |
+| `envoy_http_downstream_cx_rx_bytes_total` | Counter | Bytes received from downstream clients | — |
+| `envoy_http_downstream_cx_tx_bytes_total` | Counter | Bytes sent to downstream clients | — |
 
-#### Upstream Clusters (outbound from this sidecar)
+#### Upstream Clusters (Outbound)
 
-These are the most important metrics for inter-service traffic. Each upstream in the service mesh has a cluster.
+The most important metrics for inter-service traffic. Each upstream service has one Envoy cluster. These metrics appear on the **calling** sidecar, tagged with `consul_destination_service=<callee>`.
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_cluster_upstream_rq_total` | Counter | Total requests sent to the upstream |
-| `envoy_cluster_upstream_rq_active` | Gauge | Requests currently in flight to the upstream |
-| `envoy_cluster_upstream_rq_pending_active` | Gauge | Requests queued waiting for a connection |
-| `envoy_cluster_upstream_rq_pending_overflow` | Counter | Requests dropped because the pending queue was full |
-| `envoy_cluster_upstream_rq_time_bucket` | Histogram | Request latency to the upstream (use for P50/P95/P99) |
-| `envoy_cluster_upstream_rq_time_sum` | Counter | Sum of upstream latency (ms) |
-| `envoy_cluster_upstream_rq_time_count` | Counter | Count of timed upstream requests |
-| `envoy_cluster_upstream_rq_xx` | Counter | Requests by response class (label `envoy_response_code_class`: 1,2,3,4,5) |
-| `envoy_cluster_upstream_rq_timeout` | Counter | Requests that timed out waiting for the upstream |
-| `envoy_cluster_upstream_rq_retry` | Counter | Requests that were retried |
-| `envoy_cluster_upstream_rq_retry_success` | Counter | Retries that ultimately succeeded |
-| `envoy_cluster_upstream_cx_total` | Counter | Total connections made to the upstream |
-| `envoy_cluster_upstream_cx_active` | Gauge | Active connections to the upstream |
-| `envoy_cluster_upstream_cx_connect_timeout` | Counter | Connection attempts that timed out |
-| `envoy_cluster_upstream_cx_connect_fail` | Counter | Failed connection attempts |
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_cluster_upstream_rq_total` | Counter | Total requests sent to the upstream | Service Health → Request Volume; Service-to-Service → Request Rate; Gateways → TGW External RPS |
+| `envoy_cluster_upstream_rq_active` | Gauge | Requests currently in flight to the upstream | — |
+| `envoy_cluster_upstream_rq_xx` | Counter | Requests by response class (label `envoy_response_code_class` = 1/2/3/4/5) | Service Health → Error Rate; Service-to-Service → Error Rate & Status Class |
+| `envoy_cluster_upstream_rq_time_bucket` | Histogram | Upstream request latency histogram (ms) — use for P50/P95/P99 | Service Health → P95 Latency; Service-to-Service → Response Time; Gateways → TGW P99 Latency |
+| `envoy_cluster_upstream_rq_time_sum` / `_count` | Counter | Sum/count for upstream latency histogram | — |
+| `envoy_cluster_upstream_rq_pending_active` | Gauge | Requests queued waiting for a free connection slot | — |
+| `envoy_cluster_upstream_rq_pending_total` | Counter | Total requests that entered the pending queue | — |
+| `envoy_cluster_upstream_rq_pending_overflow` | Counter | Requests dropped because the pending queue was full (circuit breaker) | — |
+| `envoy_cluster_upstream_rq_pending_failure_eject` | Counter | Requests ejected from the pending queue due to outlier detection | — |
+| `envoy_cluster_upstream_rq_timeout` | Counter | Requests that timed out waiting for an upstream response | — |
+| `envoy_cluster_upstream_rq_per_try_timeout` | Counter | Individual retry attempt timeouts | — |
+| `envoy_cluster_upstream_rq_retry` | Counter | Requests that triggered at least one retry | — |
+| `envoy_cluster_upstream_rq_retry_success` | Counter | Retries that ultimately received a 2xx response | — |
+| `envoy_cluster_upstream_rq_retry_limit_exceeded` | Counter | Requests that exhausted all retries | — |
+| `envoy_cluster_upstream_rq_retry_overflow` | Counter | Retries dropped because the retry budget was exhausted | — |
+| `envoy_cluster_upstream_rq_cancelled` | Counter | Requests cancelled before they could be sent | — |
+| `envoy_cluster_upstream_rq_rx_reset` | Counter | Stream resets initiated by the upstream | — |
+| `envoy_cluster_upstream_rq_tx_reset` | Counter | Stream resets initiated by this Envoy | — |
+| `envoy_cluster_upstream_rq_completed` | Counter | Requests that received any response (2xx, 5xx, reset) | — |
+| `envoy_cluster_upstream_cx_total` | Counter | Total TCP connections made to this upstream | — |
+| `envoy_cluster_upstream_cx_active` | Gauge | Active persistent connections to the upstream | Service Health → Upstream Connections; Service-to-Service → Active Connections; Gateways → TGW Active Connections |
+| `envoy_cluster_upstream_cx_connect_fail` | Counter | Failed TCP connection attempts | — |
+| `envoy_cluster_upstream_cx_connect_timeout` | Counter | Connection attempts that exceeded the connect timeout | — |
+| `envoy_cluster_upstream_cx_connect_attempts_exceeded` | Counter | Connection attempts that hit the maximum retry limit | — |
+| `envoy_cluster_upstream_cx_none_healthy` | Counter | Requests dropped because all upstream endpoints were unhealthy | — |
+| `envoy_cluster_upstream_cx_overflow` | Counter | Connections dropped because the per-cluster connection limit was reached | — |
+| `envoy_cluster_upstream_cx_pool_overflow` | Counter | Connection pool exhausted — requests waited for a free connection | — |
+| `envoy_cluster_upstream_cx_destroy_with_active_rq` | Counter | Connections closed while an active request was in progress | — |
+| `envoy_cluster_upstream_cx_rx_bytes_total` | Counter | Bytes received from the upstream | — |
+| `envoy_cluster_upstream_cx_tx_bytes_total` | Counter | Bytes sent to the upstream | — |
+| `envoy_cluster_upstream_cx_http1_total` | Counter | HTTP/1.1 upstream connections | — |
+| `envoy_cluster_upstream_cx_http2_total` | Counter | HTTP/2 upstream connections (used for Connect mTLS) | — |
+| `envoy_cluster_upstream_cx_idle_timeout` | Counter | Connections closed after exceeding the idle timeout | — |
 
-**P99 latency between two services:**
+**Key PromQL examples:**
 
 ```promql
+# P99 request latency from web to api
 histogram_quantile(0.99,
   sum(rate(envoy_cluster_upstream_rq_time_bucket{
-    consul_source_service="nginx",
-    consul_destination_service="frontend"
+    consul_source_service="web",
+    consul_destination_service="api"
   }[$__rate_interval])) by (le)
 )
-```
 
-**Error rate (5xx) for a specific upstream:**
-
-```promql
+# 5xx error rate for the payments upstream (all callers)
 sum(rate(envoy_cluster_upstream_rq_xx{
   consul_destination_service="payments",
   envoy_response_code_class="5"
@@ -334,80 +479,251 @@ sum(rate(envoy_cluster_upstream_rq_total{
 }[$__rate_interval]))
 ```
 
-#### Listener (connection acceptance)
+#### Listener (Connection Acceptance)
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_listener_downstream_cx_total` | Counter | Total connections accepted by all listeners |
-| `envoy_listener_downstream_cx_active` | Gauge | Active connections across all listeners |
-| `envoy_listener_downstream_cx_overflow` | Counter | Connections rejected because the connection limit was reached |
-| `envoy_listener_downstream_cx_overload_reject` | Counter | Connections rejected by overload manager (memory/CPU pressure) |
-| `envoy_listener_downstream_global_cx_overflow` | Counter | Connections rejected due to global connection limit |
-| `envoy_listener_no_filter_chain_match` | Counter | Connections with no matching filter chain (misconfigured SNI or port) |
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_listener_downstream_cx_total` | Counter | Total connections accepted across all listeners | — |
+| `envoy_listener_downstream_cx_active` | Gauge | Active connections across all listeners | — |
+| `envoy_listener_downstream_cx_overflow` | Counter | Connections rejected because the per-listener connection limit was reached | — |
+| `envoy_listener_downstream_cx_overload_reject` | Counter | Connections rejected by Envoy's overload manager (memory/CPU pressure) | — |
+| `envoy_listener_downstream_global_cx_overflow` | Counter | Connections rejected due to the global connection limit | — |
+| `envoy_listener_downstream_pre_cx_timeout` | Counter | Connections that timed out before a filter chain was selected | — |
+| `envoy_listener_no_filter_chain_match` | Counter | Connections with no matching filter chain — misconfigured mTLS SNI or port | — |
+| `envoy_listener_extension_config_missing` | Counter | ECDS filter config not yet downloaded — sidecar received traffic before xDS was ready | — |
+
+Per-service inbound listeners are also exposed with the format `envoy_listener_http_<service>_<namespace>_<dc>_*`:
+
+| Metric pattern | Description |
+|----------------|-------------|
+| `envoy_listener_http_<svc>_downstream_rq_completed` | Requests completed by this service's inbound listener |
+| `envoy_listener_http_<svc>_downstream_rq_xx` | Responses by class on this service's inbound listener |
+
+#### mTLS / TLS
+
+Mutual TLS is used for all mesh traffic (SPIFFE certificates issued by Consul CA). These metrics verify that mTLS is working and that certificates are valid.
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_listener_ssl_handshake` | Counter | Successful TLS handshakes on inbound connections | — |
+| `envoy_listener_ssl_connection_error` | Counter | TLS handshake failures (certificate mismatch, expired cert, protocol error) | — |
+| `envoy_listener_ssl_fail_verify_error` | Counter | Certificate verification failures | — |
+| `envoy_listener_ssl_fail_verify_cert_hash` | Counter | Certificate hash mismatch during SPIFFE verification | — |
+| `envoy_listener_ssl_fail_verify_san` | Counter | SAN (Subject Alternative Name) mismatch — wrong service identity | — |
+| `envoy_listener_ssl_session_reused` | Counter | TLS sessions reused via session resumption (reduces handshake overhead) | — |
+| `envoy_listener_ssl_certificate_expiration_unix_time_seconds` | Gauge | Unix timestamp of the nearest expiring leaf certificate | — |
+| `envoy_listener_server_ssl_socket_factory_downstream_context_secrets_not_ready` | Counter | Times the TLS context had no valid certificate during a connection attempt | — |
+
+> **What to watch:** `envoy_listener_ssl_fail_verify_san > 0` means a service is presenting a SPIFFE certificate for the wrong identity — this blocks all inbound traffic with TLS handshake failures. Correlate with Consul ACL policy changes, service name changes, or certificate rotation issues.
 
 #### Health Checks
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_cluster_health_check_success` | Counter | Health checks that returned healthy |
-| `envoy_cluster_health_check_failure` | Counter | Health checks that returned unhealthy |
-| `envoy_cluster_health_check_network_failure` | Counter | Health checks that failed due to network errors |
-| `envoy_cluster_membership_healthy` | Gauge | Number of healthy endpoints in this cluster |
-| `envoy_cluster_membership_total` | Gauge | Total endpoints configured for this cluster |
-| `envoy_cluster_membership_degraded` | Gauge | Endpoints degraded (partial health) |
+Envoy performs passive health checking based on upstream responses. Active health checks can also be configured but are not enabled by default in this stack.
 
-#### Circuit Breaker & Outlier Detection
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_cluster_membership_healthy` | Gauge | Healthy endpoints in this upstream cluster | — |
+| `envoy_cluster_membership_total` | Gauge | Total endpoints configured for this upstream | — |
+| `envoy_cluster_membership_degraded` | Gauge | Endpoints in a degraded (partial health) state | — |
+| `envoy_cluster_membership_excluded` | Gauge | Endpoints excluded by outlier detection | — |
+| `envoy_cluster_membership_change` | Counter | Endpoint additions/removals driven by xDS updates from Consul | — |
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_cluster_upstream_rq_pending_overflow` | Counter | Requests dropped due to pending queue overflow (circuit breaker trigger) |
-| `envoy_cluster_upstream_rq_cancelled` | Counter | Requests cancelled before they could be sent |
-| `envoy_cluster_outlier_detection_ejections_active` | Gauge | Endpoints currently ejected by outlier detection |
-| `envoy_cluster_outlier_detection_ejections_total` | Counter | Total ejections by outlier detection |
+> **What to watch:** `envoy_cluster_membership_healthy < envoy_cluster_membership_total` means some upstreams are unhealthy. When `envoy_cluster_membership_healthy = 0`, all traffic to that upstream is dropped with access log flag `UH` (no healthy upstream host).
+
+#### Circuit Breakers (Capacity-Based)
+
+Envoy enforces configurable limits on concurrent requests, connections, and retries per upstream cluster. When a limit is reached, Envoy immediately rejects new requests rather than queuing them. These are **gauge** metrics that flip between 0 and 1.
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_cluster_circuit_breakers_default_rq_open` | Gauge | 1 = max concurrent requests limit exceeded | — |
+| `envoy_cluster_circuit_breakers_default_rq_pending_open` | Gauge | 1 = max pending requests limit exceeded | — |
+| `envoy_cluster_circuit_breakers_default_rq_retry_open` | Gauge | 1 = max concurrent retries limit exceeded | — |
+| `envoy_cluster_circuit_breakers_default_cx_open` | Gauge | 1 = max connections limit exceeded | — |
+| `envoy_cluster_circuit_breakers_default_cx_pool_open` | Gauge | 1 = connection pool limit exceeded | — |
+| `envoy_cluster_circuit_breakers_high_rq_open` | Gauge | Same as above for high-priority request traffic | — |
+| `envoy_cluster_circuit_breakers_high_cx_open` | Gauge | Connection circuit breaker for high-priority traffic | — |
+
+> **Effect:** When a circuit breaker opens (`= 1`), Envoy returns `503` to new requests with the response flag `UO` (upstream overflow) in the access log. The counter metric `envoy_cluster_upstream_rq_pending_overflow` increments for each rejected request.
+
+#### Outlier Detection (Success-Rate-Based)
+
+Consul configures Envoy with passive outlier detection. When an upstream endpoint returns consecutive 5xx errors or gateway failures it is temporarily ejected from the load-balancing pool — this is what the Grafana dashboards call "circuit breaking."
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_cluster_outlier_detection_ejections_active` | Gauge | Endpoints currently ejected from the upstream pool | Service Health → Active Circuit Breakers |
+| `envoy_cluster_outlier_detection_ejections_consecutive_5xx` | Gauge | Running count of consecutive 5xx errors on the most-affected endpoint | Service Health → Circuit Breakers Triggered |
+| `envoy_cluster_outlier_detection_ejections_total` | Counter | Total ejection events (endpoint declared unhealthy) | — |
+| `envoy_cluster_outlier_detection_ejections_overflow` | Counter | Ejection attempts blocked because max ejection percentage was already reached | — |
+| `envoy_cluster_outlier_detection_ejections_enforced_consecutive_5xx` | Counter | Ejections actually enforced for consecutive 5xx (vs detected but suppressed) | — |
+| `envoy_cluster_outlier_detection_ejections_enforced_consecutive_gateway_failure` | Counter | Ejections enforced for consecutive gateway failures (connect errors, resets) | — |
+| `envoy_cluster_outlier_detection_ejections_enforced_success_rate` | Counter | Ejections enforced because an endpoint's success rate fell below threshold | — |
+| `envoy_cluster_outlier_detection_ejections_enforced_failure_percentage` | Counter | Ejections enforced based on failure percentage threshold | — |
+| `envoy_cluster_outlier_detection_ejections_detected_consecutive_5xx` | Counter | Ejections detected (includes some suppressed by max_ejection_percent) | — |
+
+> **Dashboard note:** The Service Health "Circuit Breakers Triggered" panel uses:
+> ```promql
+> sum(max_over_time(envoy_cluster_outlier_detection_ejections_consecutive_5xx[$__range]))
+>   by (consul_destination_service)
+> ```
+> This is a **gauge** metric. Do **not** use `increase()` or `rate()` — Grafana will generate a warning and the result will be meaningless.
+
+#### xDS / Control Plane
+
+These metrics show how Envoy receives and applies configuration updates pushed by the Consul server via xDS (the Envoy discovery service API).
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_listener_manager_lds_update_success` | Counter | Successful LDS (Listener Discovery Service) config updates received | — |
+| `envoy_listener_manager_lds_update_failure` | Counter | LDS updates that Envoy failed to apply | — |
+| `envoy_listener_manager_lds_update_rejected` | Counter | LDS updates rejected by Envoy (schema validation failure) | — |
+| `envoy_listener_manager_lds_update_attempt` | Counter | Total LDS update attempts from the control plane | — |
+| `envoy_listener_manager_lds_update_duration` | Histogram | Time (ms) to apply an LDS update | — |
+| `envoy_listener_manager_total_listeners_active` | Gauge | Number of active listeners currently configured | — |
+| `envoy_listener_manager_total_listeners_warming` | Gauge | Listeners waiting for dependencies (e.g. TLS secrets) — should be 0 at steady state | — |
+| `envoy_listener_manager_total_listeners_draining` | Gauge | Listeners draining connections before removal | — |
+| `envoy_listener_manager_total_filter_chains_draining` | Gauge | Filter chains being drained during hot listener updates | — |
+| `envoy_listener_manager_listener_create_failure` | Counter | Failures creating a new listener | — |
+
+> **What to watch:** `envoy_listener_manager_lds_update_failure > 0` means Envoy is rejecting config pushed by Consul. Mesh config changes (new ServiceIntentions, ProxyDefaults edits) will not take effect. Check consul-dataplane container logs for the xDS rejection reason.
 
 #### Tracing
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `envoy_tracing_zipkin_timer_flushed` | Counter | Number of span batches flushed to Zipkin collector |
-| `envoy_tracing_zipkin_spans_sent` | Counter | Total spans sent to the Zipkin endpoint |
-| `envoy_tracing_zipkin_reports_dropped` | Counter | Spans dropped due to queue overflow |
-| `envoy_tracing_random_sampling` | Counter | Requests that were sampled for tracing (increments per sampled request) |
-| `envoy_tracing_not_traceable` | Counter | Requests that could not be traced (missing trace ID, sampling = 0%) |
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `envoy_tracing_zipkin_spans_sent` | Counter | Zipkin spans successfully delivered to the OTel Collector | — |
+| `envoy_tracing_zipkin_timer_flushed` | Counter | Span batches flushed (one flush = multiple spans) | — |
+| `envoy_tracing_zipkin_reports_sent` | Counter | Zipkin report batches sent (equivalent to `timer_flushed`) | — |
+| `envoy_tracing_zipkin_reports_dropped` | Counter | Span batches dropped because the outbound queue was full | — |
+| `envoy_tracing_zipkin_reports_failed` | Counter | Span batches that failed to reach the OTel Collector (network error) | — |
+| `envoy_tracing_zipkin_reports_skipped_no_cluster` | Counter | Spans skipped because the `otel_zipkin` static cluster is not yet ready | — |
 
-> **Debugging tracing:** If `envoy_tracing_not_traceable` is non-zero and `envoy_tracing_random_sampling` stays at 0, the HCM `random_sampling` percentage is 0%. See [Troubleshooting](#troubleshooting) for the Consul 1.22.x workaround.
+> **Troubleshooting:** If `envoy_tracing_zipkin_spans_sent` stays at 0 but `envoy_tracing_zipkin_reports_skipped_no_cluster` is incrementing, the static cluster pointing to the OTel Collector is misconfigured or the Collector is unreachable. Verify `envoy_extra_static_clusters_json` in the `ProxyDefaults` CRD.
+
+---
+
+### OTel Servicegraph Metrics
+
+The OTel Collector's **servicegraph connector** consumes Zipkin spans emitted by Envoy sidecars, matches client/server span pairs, and derives metrics that describe the call graph between services. These are exported via Prometheus on port `:8889` and scraped by Prometheus under `job="servicegraph"`.
+
+| Metric | Type | Labels | Description | Dashboard |
+|--------|------|--------|-------------|-----------|
+| `traces_service_graph_request_total` | Counter | `client`, `server`, `connection_type`, `failed`, `status_code` | Total requests observed between a service pair. Powers both the node list and the edge weights in the Service Dependency Map. | Service-to-Service → Service Dependency Map |
+| `traces_service_graph_request_client_seconds_bucket` | Histogram | `client`, `server`, … | Client-side latency (span duration from the caller's perspective). Use for cross-service P99 derived from traces. | Service-to-Service → Response Time |
+| `traces_service_graph_request_client_seconds_sum` / `_count` | Counter | Same | Sum/count for client-side latency histogram | — |
+| `traces_service_graph_request_server_seconds_bucket` | Histogram | `client`, `server`, … | Server-side latency (span duration from the callee's perspective). Includes processing time only, not network round-trip. | — |
+| `traces_service_graph_request_server_seconds_sum` / `_count` | Counter | Same | Sum/count for server-side latency histogram | — |
+
+**Label reference for servicegraph metrics:**
+
+| Label | Description | Example |
+|-------|-------------|---------|
+| `client` | Service name of the caller (extracted from the local root span) | `web` |
+| `server` | Service name of the callee (extracted from span peer attributes) | `api` |
+| `connection_type` | `virtual_node`, `virtual_server`, or empty (direct mesh call) | `` |
+| `failed` | `true` if the request resulted in an error span | `false` |
+| `status_code` | gRPC/HTTP status code class | `STATUS_CODE_UNSET` |
+
+**How the Service Dependency Map is built:**
+
+```promql
+# Edges — service-to-service links with request rate as weight
+sum by (client, server) (
+  rate(traces_service_graph_request_total{client!="", server!=""}[5m])
+)
+
+# Nodes — individual services extracted from the server label
+sum by (node_id) (
+  label_replace(
+    rate(traces_service_graph_request_total{server!=""}[5m]),
+    "node_id", "$1", "server", "(.+)"
+  )
+)
+```
+
+> **Why `label_replace`?** Grafana's Node Graph panel requires a `node_id` field in the nodes data frame and `source`/`target` fields in the edges data frame. Both frames come from the same metric, so `label_replace` creates a distinct `node_id` label from the `server` label to differentiate the two query results without adding a new Prometheus label.
+
+**Servicegraph connector self-metrics** (scraped from `:8888` under `job="otel-collector"`):
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `otelcol_connector_servicegraph_total_edges` | Counter | Total span pairs matched (client + server spans combined into one edge) | — |
+| `otelcol_connector_servicegraph_expired_edges` | Counter | Edges that expired before the matching span arrived — indicates span pairing timeouts | — |
+
+> **Troubleshooting:** If `traces_service_graph_request_total` has no data but `otelcol_connector_servicegraph_expired_edges` is rising, the connector is receiving only client **or** server spans — not both. Ensure both the calling and the called service have Connect inject enabled so both sidecars emit Zipkin spans.
 
 ---
 
 ### OTel Collector Self-Metrics
 
-The collector exposes its own Prometheus metrics at `:8888/metrics`. These are critical for pipeline health monitoring.
+The OTel Collector exposes its own operational metrics at `:8888/metrics` (scraped as `job="otel-collector"`). These are essential for verifying that the telemetry pipeline is functioning end-to-end.
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `otelcol_receiver_accepted_spans_total` | Counter | Spans accepted into the pipeline by receiver |
-| `otelcol_receiver_refused_spans_total` | Counter | Spans refused (parse error, capacity) |
-| `otelcol_receiver_accepted_metric_points_total` | Counter | Metric datapoints accepted |
-| `otelcol_receiver_accepted_log_records_total` | Counter | Log records accepted |
-| `otelcol_exporter_sent_spans_total` | Counter | Spans successfully sent to the exporter backend |
-| `otelcol_exporter_send_failed_spans_total` | Counter | Spans that failed to export (backend down, timeout) |
-| `otelcol_exporter_sent_metric_points_total` | Counter | Metric points exported |
-| `otelcol_exporter_sent_log_records_total` | Counter | Log records exported to Loki |
-| `otelcol_processor_dropped_spans_total` | Counter | Spans dropped by processors (usually memory_limiter) |
-| `otelcol_processor_refused_spans_total` | Counter | Spans refused by processors |
-| `otelcol_process_memory_rss` | Gauge | Resident set size (physical RAM) of the collector process |
-| `otelcol_process_cpu_seconds_total` | Counter | CPU time consumed by the collector |
-| `otelcol_batch_send_size_bucket` | Histogram | Distribution of batch sizes sent to exporters |
-| `otelcol_batch_timeout_trigger_send_total` | Counter | Batches sent because the timeout fired (not size limit) |
+#### Receivers (Ingestion)
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `otelcol_receiver_accepted_spans` | Counter | Spans accepted into the pipeline. Labels: `receiver` (zipkin, otlp), `transport` | — |
+| `otelcol_receiver_refused_spans` | Counter | Spans rejected — parse errors or capacity exceeded | — |
+| `otelcol_receiver_accepted_metric_points` | Counter | Metric data points accepted from Prometheus scrapes | — |
+| `otelcol_receiver_refused_metric_points` | Counter | Metric points rejected | — |
+
+#### Processors
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `otelcol_processor_accepted_spans` | Counter | Spans accepted by the processor chain | — |
+| `otelcol_processor_dropped_spans` | Counter | Spans dropped, usually by `memory_limiter` when RAM is constrained | — |
+| `otelcol_processor_refused_spans` | Counter | Spans refused by a processor | — |
+| `otelcol_processor_batch_batch_send_size` | Histogram | Spans per batch sent to exporters — larger batches are more efficient | — |
+| `otelcol_processor_batch_batch_size_trigger_send` | Counter | Batches sent because the size threshold was reached | — |
+| `otelcol_processor_batch_timeout_trigger_send` | Counter | Batches sent because the timeout fired (batch not yet full) | — |
+| `otelcol_processor_batch_metadata_cardinality` | Gauge | Unique metadata combinations in the batcher — high values indicate label cardinality explosion | — |
+
+#### Exporters (Delivery)
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `otelcol_exporter_sent_spans` | Counter | Spans successfully exported. Labels: `exporter` (jaeger, otlp) | — |
+| `otelcol_exporter_send_failed_spans` | Counter | Spans that failed to export — backend down or timeout | — |
+| `otelcol_exporter_sent_metric_points` | Counter | Metric data points exported | — |
+| `otelcol_exporter_send_failed_metric_points` | Counter | Metric points that failed to export | — |
+| `otelcol_exporter_queue_size` | Gauge | Current depth of the retry/send queue | — |
+| `otelcol_exporter_queue_capacity` | Gauge | Maximum queue capacity | — |
+
+#### Process
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `otelcol_process_uptime` | Counter | Seconds since the collector started | — |
+| `otelcol_process_cpu_seconds` | Counter | CPU time consumed by the collector process | — |
+| `otelcol_process_memory_rss` | Gauge | Resident set size — physical RAM consumed by the collector | — |
+| `otelcol_process_runtime_heap_alloc_bytes` | Gauge | Go heap bytes currently in use | — |
+| `otelcol_process_runtime_total_alloc_bytes` | Counter | Total bytes ever allocated by the Go runtime | — |
+
+#### Kubernetes Metadata Enrichment
+
+| Metric | Type | Description | Dashboard |
+|--------|------|-------------|-----------|
+| `otelcol_otelsvc_k8s_pod_added` | Counter | Pods added to the k8sattributes processor's watch cache | — |
+| `otelcol_otelsvc_k8s_pod_updated` | Counter | Pod metadata updates processed by k8sattributes | — |
+| `otelcol_otelsvc_k8s_pod_deleted` | Counter | Pods removed from the watch cache | — |
+| `otelcol_otelsvc_k8s_pod_table_size` | Gauge | Current number of pods in the metadata cache | — |
 
 **Pipeline health check:**
 
 ```promql
-# Check exporter failure rate
-rate(otelcol_exporter_send_failed_spans_total[5m]) > 0
+# Confirm spans are reaching Jaeger
+rate(otelcol_exporter_sent_spans{exporter="jaeger"}[5m])
 
-# Confirm spans are flowing end-to-end
-rate(otelcol_exporter_sent_spans_total[5m])
+# Detect exporter failures
+rate(otelcol_exporter_send_failed_spans[5m]) > 0
+
+# Check if memory_limiter is dropping spans
+rate(otelcol_processor_dropped_spans[5m]) > 0
+
+# Verify servicegraph is producing edges
+rate(otelcol_connector_servicegraph_total_edges[5m])
 ```
 
 ---
