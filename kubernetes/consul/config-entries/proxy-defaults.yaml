@@ -59,10 +59,15 @@ spec:
       }
 
   # ── Envoy access logs ────────────────────────────────────────────────────
-  # Enables access logging to stdout in the sidecar container.
-  # jsonFormat requires a JSON string value in this CRD version — use the
-  # text format here; structured JSON logging can be configured via Envoy
-  # bootstrap overrides if needed.
+  # Structured JSON access logs written to stdout of the consul-dataplane
+  # sidecar container. Promtail scrapes the container stdout and labels them
+  # service_name=envoy-sidecar / log_source=access-log so the Grafana
+  # "Envoy Access Logs" dashboard can parse them with LogQL | json.
+  #
+  # Field names match the Grafana dashboard LogQL queries:
+  #   {service_name="envoy-sidecar"} | json | http_status_code >= 500
+  #   {service_name="envoy-sidecar"} | json | duration > 1000
   accessLogs:
     enabled: true
     type: stdout
+    jsonFormat: '{"start_time":"%START_TIME%","method":"%REQ(:METHOD)%","path":"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%","protocol":"%PROTOCOL%","http_status_code":"%RESPONSE_CODE%","response_flags":"%RESPONSE_FLAGS%","bytes_received":"%BYTES_RECEIVED%","bytes_sent":"%BYTES_SENT%","duration":"%DURATION%","upstream_cluster":"%UPSTREAM_CLUSTER%","upstream_host":"%UPSTREAM_HOST%","authority":"%REQ(:AUTHORITY)%","request_id":"%REQ(X-REQUEST-ID)%"}'

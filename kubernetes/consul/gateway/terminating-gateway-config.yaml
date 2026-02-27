@@ -14,4 +14,3 @@ metadata:
 spec:
   services:
     - name: rates
-      namespace: default

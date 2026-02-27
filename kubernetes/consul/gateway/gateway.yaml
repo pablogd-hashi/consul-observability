@@ -4,7 +4,7 @@
 # an Envoy pod in the consul namespace, then creates a Service for it.
 #
 # After deployment, the Service is patched to NodePort 30004 by kind-setup.sh
-# so it's accessible at http://localhost:8080/ via the kind port mapping.
+# so it's accessible at http://localhost:18080/ via the kind port mapping.
 apiVersion: gateway.networking.k8s.io/v1beta1
 kind: Gateway
 metadata:

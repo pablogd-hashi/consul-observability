@@ -14,7 +14,6 @@ global:
   tls:
     enabled: true
     verify: true
-    enableAutoEncrypt: true   # Automatically distributes certs to client agents
     httpsOnly: false          # Keep HTTP on :8500 so Prometheus can scrape /v1/agent/metrics
 
   # ── ACLs ─────────────────────────────────────────────────────────────────
@@ -58,10 +57,6 @@ server:
   service:
     type: ClusterIP
 
-client:
-  enabled: true
-  grpc: true
-
 # ── Connect Injection ───────────────────────────────────────────────────────
 connectInject:
   enabled: true
@@ -78,9 +73,28 @@ connectInject:
     defaultPrometheusScrapePort: 20200
     defaultPrometheusScrapePath: "/stats/prometheus"
 
-  # Transparent proxy — disabled for simplicity; using explicit upstream annotations
+  # Transparent proxy — enabled so services can reach upstreams by DNS name without
+  # explicit sidecar port annotations. Required for currency → rates (via TGW):
+  # currency calls http://rates:9090 and Envoy intercepts + routes via the
+  # Terminating Gateway automatically. defaultOverwriteProbes rewrites kubelet
+  # health check probes through Envoy (needed when mTLS strict mode is in use).
   transparentProxy:
-    defaultEnabled: false
+    defaultEnabled: true
+    defaultOverwriteProbes: true
+
+  # ── API Gateway ─────────────────────────────────────────────────────────────
+  # Manages Envoy pods that serve as the north-south entry point.
+  # Replaces the deprecated top-level apiGateway stanza (removed in Consul 1.19).
+  # The GatewayClass named "consul" is created automatically by managedGatewayClass.
+  #
+  # manageExternalCRDs: true (the official default) tells Consul to install the
+  # Gateway API CRDs it was tested against, including TCPRoute (v1alpha2) which
+  # the connect-injector requires at startup. No manual CRD installation needed.
+  apiGateway:
+    manageExternalCRDs: true
+    managedGatewayClass:
+      enabled: true                  # auto-creates GatewayClass "consul"
+      serviceType: NodePort          # expose on NodePort for kind cluster
 
 # ── CRD Controller ──────────────────────────────────────────────────────────
 # Required to apply ProxyDefaults, ServiceDefaults etc. as CRDs
@@ -107,14 +121,6 @@ dns:
 # ── Sync catalog ─────────────────────────────────────────────────────────────
 syncCatalog:
   enabled: false   # Enable to sync k8s services to Consul catalog
-
-# ── API Gateway ──────────────────────────────────────────────────────────────
-# Deploys a Consul-managed Envoy pod as the north-south API Gateway.
-# Exposes the mesh to external clients via the Kubernetes Gateway API.
-# Requires Gateway API CRDs to be installed before this Helm chart.
-apiGateway:
-  enabled: true
-  image: "hashicorp/consul-api-gateway:0.5.4"
 
 # ── Terminating Gateway ───────────────────────────────────────────────────────
 # Enables mesh services to call external/legacy services through a controlled
