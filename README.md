@@ -1,6 +1,6 @@
 # Consul Observability Demo
 
-A hands-on demo of the three pillars of observability — **metrics**, **logs**, and **traces** — with a Consul service mesh. Runs identically on Docker Compose (local) and Kubernetes (kind/minikube/EKS/GKE).
+A hands-on demo of the three pillars of observability — **metrics**, **logs**, and **traces** — with a Consul service mesh. Runs identically on Docker Compose, Podman Compose (rootless; RHEL/Fedora/macOS), and Kubernetes (kind/minikube/EKS/GKE).
 
 The demo app is [fake-service](https://github.com/nicholasjackson/fake-service), a lightweight configurable HTTP service that simulates a realistic multi-tier call chain — no custom code to build or maintain.
 
@@ -42,31 +42,107 @@ Prometheus scrapes **Envoy metrics** (:20200/stats/prometheus) and **Consul** (/
 ### Quick start
 
 ```bash
-cd docker
-
-# Pull images first (avoids timeout on first startup)
-task pull
+# Pre-pull images (avoids timeout on first startup)
+task docker:pull
 
 # Start the full stack
-task up
+task docker:up
 
 # Verify everything is running
 task validate
 ```
 
-Or without Task:
+Without Task:
 
 ```bash
-cd docker
-docker compose up -d
-docker compose ps
+docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml ps
 ```
+
+### Endpoints
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| App entry point | http://localhost:21000 | Through Envoy proxy |
+| App UI | http://localhost:21000/ui | Fake-service topology UI |
+| Consul UI | http://localhost:8500 | Service health + topology |
+| Grafana | http://localhost:3000 | admin / admin |
+| Jaeger UI | http://localhost:16686 | Search service: `web` |
+| Prometheus | http://localhost:9090 | |
+| Envoy metrics | http://localhost:20200/stats/prometheus | Raw Prometheus metrics |
+| Loki | http://localhost:3100 | |
+
+---
+
+## Podman Compose
+
+Same stack, same config files — the `podman/podman-compose.yml` points back to `docker/` for all configs. Bind mounts include `:z` for SELinux relabeling (no-op on macOS).
+
+### Prerequisites
+
+```
+podman        >= 4.0
+podman-compose    brew install podman-compose  (or: pip3 install podman-compose)
+```
+
+> **Important**: install `podman-compose` explicitly. Without it, `podman compose` falls back to
+> Docker's CLI plugin (`docker-compose`), which runs containers against the Docker daemon instead
+> of Podman. The brew/pip package ensures the stack runs under Podman.
+
+macOS only — start the Podman machine first:
+
+```bash
+podman machine init    # one-time setup (creates a Linux VM)
+podman machine start
+```
+
+### Quick start
+
+```bash
+# Pre-pull images
+task podman:pull
+
+# Start the full stack
+task podman:up
+
+# Verify everything is running
+task validate
+```
+
+Without Task:
+
+```bash
+cd podman
+cp .env.example .env
+podman compose -f podman-compose.yml up -d
+podman compose -f podman-compose.yml ps
+```
+
+### Endpoints
+
+Identical to Docker Compose — same ports, same URLs:
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| App entry point | http://localhost:21000 | Through Envoy proxy |
+| App UI | http://localhost:21000/ui | Fake-service topology UI |
+| Consul UI | http://localhost:8500 | |
+| Grafana | http://localhost:3000 | admin / admin |
+| Jaeger UI | http://localhost:16686 | |
+| Prometheus | http://localhost:9090 | |
+| Loki | http://localhost:3100 | |
+
+### Podman notes
+
+- **Rootless**: containers run without root privileges. `user: root` inside the Envoy container maps to your host user UID — the `envoy-logs` named volume is always writable.
+- **SELinux**: the `:z` flag on bind mounts relabels the host path so the container can read it. Silently ignored on macOS and systems without SELinux enforcing.
+- **macOS**: `podman machine` runs a lightweight Linux VM. `podman machine stop` when you're done to free resources.
 
 ---
 
 ## Demo walkthrough
 
-> The load generator starts automatically and drives traffic through the full chain every 2 seconds. Allow ~30 seconds after `task up` for traces and logs to appear.
+> The load generator starts automatically and drives traffic through the full chain every 2 seconds. Allow ~30 seconds after startup for traces and logs to appear in Grafana.
 
 ### 1 — Hit the service
 
@@ -86,7 +162,7 @@ open http://localhost:21000/ui
 
 Open **http://localhost:8500**
 
-- **Services** tab: shows all 5 services (web, api, payments, currency, cache) with health check status
+- **Services** tab: all 5 services (web, api, payments, currency, cache) with health check status
 - **Topology** (Consul 1.17+): visual service dependency graph
 
 ```bash
@@ -125,63 +201,44 @@ Open **http://localhost:16686**
 2. Click any trace to see the full call chain waterfall: `web → api → payments → currency` and `api → cache` (parallel)
 3. Click the `traceparent` field in the Envoy Access Logs dashboard to jump directly to the matching trace
 
-### 5 — Inject errors (fault injection demo)
+### 5 — Fault injection demo
 
-Temporarily reconfigure a service to return errors 30% of the time:
+The interactive demo script auto-detects whether Docker, Podman, or Kubernetes is running and routes all actions correctly:
 
 ```bash
-# Restart the payments service with 30% error injection
-docker compose stop payments
-docker compose run -d --name payments_err \
-  -e NAME=payments \
-  -e LISTEN_ADDR=0.0.0.0:9090 \
-  -e UPSTREAM_URIS=http://currency:9090 \
-  -e ERROR_RATE=0.3 \
-  -e ERROR_TYPE=http_error \
-  -e ERROR_CODE=500 \
-  -e TRACING_ZIPKIN=http://otel-collector:9411 \
-  -e LOG_FORMAT=json \
-  --network docker_consul-mesh \
-  nicholasjackson/fake-service:v0.26.2
+task demo
 ```
 
-Watch in Grafana:
-- **Service-to-Service** → error rate climbs to ~30%
-- **Envoy Access Logs** → 5xx entries appear in the log stream
-- **Jaeger** → error spans appear (red) in the trace waterfall
+Menu options:
 
-Restore:
-```bash
-docker compose up -d payments
-```
+| Choice | What it does |
+|--------|-------------|
+| 1) Inject errors | Set `ERROR_RATE` on a service (e.g. payments fails 30% → HTTP 500) |
+| 2) Inject latency | Set `TIMING_*` on a service (e.g. api adds 500ms per request) |
+| 3) Load test | 30 seconds of burst traffic — spike visible in metrics |
+| 4) Reset all faults | Restore baseline (0% errors, 1ms latency) |
+| 5) Circuit breaking | 100% errors on web → Envoy ejects backend → fast 503s |
+| 6) Show URLs | Print Grafana / Jaeger / Consul / Prometheus links |
+| 7) Open all UIs | Launch dashboards in your browser |
 
-### 6 — Simulate latency
-
-```bash
-# Add 500ms artificial delay to the cache service
-docker compose stop cache
-docker compose run -d --name cache_slow \
-  -e NAME=cache \
-  -e LISTEN_ADDR=0.0.0.0:9090 \
-  -e TIMING_50_PERCENTILE=500ms \
-  -e TIMING_VARIANCE=20 \
-  -e TRACING_ZIPKIN=http://otel-collector:9411 \
-  -e LOG_FORMAT=json \
-  --network docker_consul-mesh \
-  nicholasjackson/fake-service:v0.26.2
-```
-
-Watch P99 latency rise in the **Service-to-Service** dashboard. Restore:
+Non-interactive (useful from scripts):
 
 ```bash
-docker compose up -d cache
+# Inject 30% errors on payments
+./scripts/demo.sh --inject-errors payments 0.3
+
+# Add 500ms latency to api
+./scripts/demo.sh --inject-latency api 500ms
+
+# Reset everything
+./scripts/demo.sh --reset
 ```
 
 ---
 
 ## Kubernetes (kind)
 
-Same topology, same observability stack — just deployed on Kubernetes with Consul Connect automatically injecting Envoy sidecars into each pod.
+Same topology, same observability stack — deployed on Kubernetes with Consul Connect automatically injecting Envoy sidecars into each pod.
 
 ### Prerequisites
 
@@ -197,7 +254,7 @@ consul  CLI (for gossip key generation, or openssl as fallback)
 
 ```bash
 # Bootstrap everything (~5-10 minutes)
-./scripts/kind-setup.sh
+task k8s:up
 ```
 
 The script:
@@ -210,15 +267,11 @@ The script:
 ### Access the services
 
 ```bash
-# Start all port-forwards
 kubectl port-forward svc/web          9090:9090  -n default       &
 kubectl port-forward svc/consul-ui    8500:80    -n consul        &
 kubectl port-forward svc/grafana      3000:3000  -n observability &
 kubectl port-forward svc/jaeger-query 16686:16686 -n observability &
 kubectl port-forward svc/prometheus   9091:9090  -n observability &
-
-# Or use the Taskfile shortcut:
-cd docker && task k8s-forward
 ```
 
 | Service | URL |
@@ -231,6 +284,14 @@ cd docker && task k8s-forward
 
 ### Fault injection on Kubernetes
 
+Use `task demo` — it auto-detects Kubernetes and uses `kubectl set env` to update deployments:
+
+```bash
+task demo
+```
+
+Or manually:
+
 ```bash
 # Scale payments to 0 — watch 5xx spike in Grafana
 kubectl scale deployment payments --replicas=0 -n default
@@ -242,43 +303,14 @@ kubectl scale deployment payments --replicas=1 -n default
 ### Tear down
 
 ```bash
-kind delete cluster --name consul-observability
-# or:
-cd docker && task k8s-down
+task k8s:down
 ```
-
----
-
-## Endpoints — Docker Compose
-
-| Service | URL | Notes |
-|---------|-----|-------|
-| App entry point | http://localhost:21000 | Through Envoy proxy |
-| App UI | http://localhost:21000/ui | Fake-service topology UI |
-| Consul UI | http://localhost:8500 | Service health + topology |
-| Grafana | http://localhost:3000 | admin / admin (or `$GRAFANA_ADMIN_PASSWORD`) |
-| Jaeger UI | http://localhost:16686 | Search service: `web` |
-| Prometheus | http://localhost:9090 | |
-| Envoy metrics | http://localhost:20200/stats/prometheus | Raw Prometheus metrics |
-| Loki | http://localhost:3100 | |
-
----
-
-## Dashboards
-
-All dashboards auto-provision under **Consul Observability** in Grafana.
-
-| Dashboard | Datasource(s) | What it shows |
-|-----------|---------------|---------------|
-| **Service-to-Service Traffic** | Prometheus + Jaeger | Entry-point RPS, error rate, latency, distributed trace waterfall |
-| **Consul Service Health** | Prometheus | Membership, registered services, health checks, raft stability |
-| **Envoy Access Logs** | Loki | Live access log stream, request rate by status, error counts |
 
 ---
 
 ## Architecture
 
-### Docker Compose
+### Docker Compose / Podman Compose
 
 ```
  client
@@ -338,6 +370,16 @@ All dashboards auto-provision under **Consul Observability** in Grafana.
 | `docker/loki/loki-config.yml` | Loki single-binary, filesystem storage, 7-day retention |
 | `docker/grafana/provisioning/` | Datasource + dashboard auto-provisioning |
 | `docker/grafana/dashboards/` | Three dashboard JSON files |
+| `docker/.env.example` | Fault injection env vars (copy to `.env` to override) |
+
+### Podman Compose
+
+| File | Purpose |
+|------|---------|
+| `podman/podman-compose.yml` | Compose file; bind mounts point to `docker/` configs with `:z` SELinux flag |
+| `podman/.env.example` | Fault injection env vars (copy to `.env` to override) |
+
+All Consul, Envoy, Prometheus, OTel, Loki, and Grafana configs are shared from `docker/`.
 
 ### Kubernetes
 
@@ -349,29 +391,70 @@ All dashboards auto-provision under **Consul Observability** in Grafana.
 
 ---
 
-## Operator commands
+## Task reference
+
+All tasks run from the repo root. Run `task` (no arguments) to list all available tasks.
+
+### Docker
 
 ```bash
-cd docker
-
-task up          # Start stack (detached)
-task down        # Stop + remove volumes
-task restart     # Restart all services
-task logs        # Tail all logs
-task ps          # Show container status
-task validate    # Print all endpoints + quick health checks
-task pull        # Pre-pull all images
-
-task k8s-setup   # Bootstrap kind cluster
-task k8s-down    # Delete kind cluster
-task k8s-forward # Port-forward all UIs
-task k8s-status  # Show pod status
-task k8s-validate # Check service health
+task docker:up       # Start stack (detached)
+task docker:down     # Stop (keep volumes)
+task docker:pull     # Pre-pull all images
+task docker:ps       # Show container status
+task docker:logs     # Tail all logs (Ctrl-C to stop)
 ```
+
+### Podman
+
+```bash
+task podman:up       # Start stack (detached); creates .env from .env.example if missing
+task podman:down     # Stop (keep volumes)
+task podman:clean    # Stop and remove all volumes
+task podman:pull     # Pre-pull all images with podman pull
+task podman:ps       # Show container status
+task podman:logs     # Tail all logs (Ctrl-C to stop)
+task podman:restart  # Restart all services
+```
+
+### Kubernetes
+
+```bash
+task k8s:up          # Bootstrap kind cluster (~5-10 min)
+task k8s:down        # Delete kind cluster (full teardown)
+```
+
+### Shared
+
+```bash
+task validate        # Health check — auto-detects Docker / Podman / K8s, prints status + URLs
+task demo            # Interactive fault-injection demo — auto-detects Docker / Podman / K8s
+```
+
+---
 
 ## Environment variables
 
+Fault injection is controlled via an `.env` file in the relevant directory:
+
 ```bash
-# docker/.env (copy from .env.example)
+# docker/.env or podman/.env  (copy from .env.example)
+
+# Error rate per service (0.0 = no errors, 1.0 = 100% errors)
+PAYMENTS_ERROR_RATE=0
+CURRENCY_ERROR_RATE=0
+CACHE_ERROR_RATE=0
+API_ERROR_RATE=0
+WEB_ERROR_RATE=0
+
+# Latency per service (P50/P90/P99; set all three to the same value for a flat delay)
+PAYMENTS_LATENCY_P50=1ms
+PAYMENTS_LATENCY_P90=1ms
+PAYMENTS_LATENCY_P99=1ms
+# ... (repeated for currency, cache, api, web)
+
+# Grafana admin password (default: admin)
 GRAFANA_ADMIN_PASSWORD=admin
 ```
+
+`task demo` manages these files automatically. Edit manually only if you need persistent fault state across `demo` sessions.

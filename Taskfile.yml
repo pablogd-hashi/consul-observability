@@ -5,8 +5,9 @@
 # Topology: web → api → [payments (→ currency), cache]
 #
 # Quick start:
-#   Docker:  task docker:up && task validate
-#   K8s:     task k8s:up  && task validate
+#   Docker:  task docker:up  && task validate
+#   Podman:  task podman:up  && task validate
+#   K8s:     task k8s:up     && task validate
 
 version: "3"
 
@@ -40,6 +41,103 @@ tasks:
     cmds:
       - docker compose down
 
+  docker:pull:
+    desc: "Pre-pull all Docker images"
+    dir: docker
+    cmds:
+      - docker compose pull
+
+  docker:logs:
+    desc: "Tail logs from all Docker Compose services (Ctrl-C to stop)"
+    dir: docker
+    cmds:
+      - docker compose logs -f
+
+  docker:ps:
+    desc: "Show Docker Compose service status"
+    dir: docker
+    cmds:
+      - docker compose ps
+
+  # ── Podman ─────────────────────────────────────────────────────────────────
+  # Uses podman/podman-compose.yml — shares configs from docker/ but adds
+  # :z SELinux relabeling on bind mounts for RHEL/Fedora compatibility.
+  # Prerequisites: podman >= 4.0, podman-compose  (pip install podman-compose)
+  #                macOS: run `podman machine init && podman machine start` first
+
+  podman:up:
+    desc: "Start the full Podman Compose stack (Consul + fake-service + observability)"
+    dir: podman
+    cmds:
+      - |
+        if [ ! -f .env ]; then
+          cp .env.example .env
+          echo "Created podman/.env from .env.example"
+        fi
+      - podman compose -f podman-compose.yml down --remove-orphans 2>/dev/null || true
+      - |
+        # Belt-and-suspenders: remove any stale named containers that compose down
+        # may have missed (e.g. containers orphaned from a prior interrupted run or
+        # a different compose project context).
+        for c in consul web api payments cache currency envoy prometheus loki otel-collector jaeger grafana loadgen; do
+          podman rm -f "$c" 2>/dev/null || true
+        done
+      - podman compose -f podman-compose.yml up -d
+      - |
+        echo ""
+        echo "✓ Podman stack is up."
+        echo ""
+        echo "  App (via Envoy)    http://localhost:21000/"
+        echo "  Consul UI          http://localhost:8500"
+        echo "  Grafana            http://localhost:3000  (admin/admin)"
+        echo "  Jaeger             http://localhost:16686"
+        echo "  Prometheus         http://localhost:9090"
+        echo ""
+        echo "Run: task validate   or   task demo"
+
+  podman:down:
+    desc: "Stop Podman Compose stack (keep volumes)"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml down
+
+  podman:clean:
+    desc: "Stop Podman Compose stack and remove all volumes"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml down -v
+
+  podman:pull:
+    desc: "Pre-pull all images with Podman"
+    cmds:
+      - podman pull hashicorp/consul:1.22.3
+      - podman pull nicholasjackson/fake-service:v0.26.2
+      - podman pull prom/prometheus:v2.52.0
+      - podman pull jaegertracing/all-in-one:1.58
+      - podman pull otel/opentelemetry-collector-contrib:0.103.0
+      - podman pull grafana/loki:3.1.0
+      - podman pull envoyproxy/envoy:v1.32.2
+      - podman pull grafana/grafana:10.4.3
+      - podman pull curlimages/curl:8.7.1
+
+  podman:ps:
+    desc: "Show Podman Compose service status"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml ps
+
+  podman:logs:
+    desc: "Tail logs from all Podman Compose services (Ctrl-C to stop)"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml logs -f
+
+  podman:restart:
+    desc: "Restart all Podman Compose services"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml restart
+
   # ── Kubernetes ─────────────────────────────────────────────────────────────
 
   k8s:up:
@@ -64,16 +162,24 @@ tasks:
   # ── Validate ───────────────────────────────────────────────────────────────
 
   validate:
-    desc: "Health check — auto-detects Docker vs Kubernetes, prints status + URLs"
+    desc: "Health check — auto-detects Docker / Podman / Kubernetes, prints status + URLs"
     cmds:
       - |
         DOCKER_RUNNING=false
+        PODMAN_RUNNING=false
         K8S_RUNNING=false
 
         # Detect Docker
         if docker compose -f docker/docker-compose.yml ps --status running \
             --format json 2>/dev/null | grep -q '"web"'; then
           DOCKER_RUNNING=true
+        fi
+
+        # Detect Podman (only if Docker not already running)
+        if ! $DOCKER_RUNNING; then
+          if podman compose -f podman/podman-compose.yml ps 2>/dev/null | grep -q "web"; then
+            PODMAN_RUNNING=true
+          fi
         fi
 
         # Detect K8s
@@ -95,6 +201,26 @@ tasks:
           echo ""
           echo "── Service status ──"
           docker compose -f docker/docker-compose.yml ps --format "table {{.Name}}\t{{.Status}}"
+          echo ""
+          echo "── Quick checks ──"
+          curl -sf http://localhost:8500/v1/status/leader | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY"
+          curl -sf http://localhost:9090/-/ready          && echo "  Prometheus: READY"          || echo "  Prometheus: NOT READY"
+          curl -sf http://localhost:3100/ready            && echo "  Loki: READY"                || echo "  Loki: NOT READY"
+          curl -sf http://localhost:21000/ >/dev/null     && echo "  Web (Envoy): READY"         || echo "  Web: NOT READY"
+
+        elif $PODMAN_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — Podman                  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  App (via Envoy)    http://localhost:21000/                   ║"
+          echo "║  Consul UI          http://localhost:8500                     ║"
+          echo "║  Grafana            http://localhost:3000  (admin/admin)      ║"
+          echo "║  Jaeger             http://localhost:16686                    ║"
+          echo "║  Prometheus         http://localhost:9090                     ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── Service status ──"
+          podman compose -f podman/podman-compose.yml ps 2>/dev/null
           echo ""
           echo "── Quick checks ──"
           curl -sf http://localhost:8500/v1/status/leader | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY"
@@ -132,6 +258,7 @@ tasks:
         else
           echo "No running stack detected."
           echo "  Docker:  task docker:up"
+          echo "  Podman:  task podman:up"
           echo "  K8s:     task k8s:up"
           exit 1
         fi

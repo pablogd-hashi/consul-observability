@@ -16,8 +16,9 @@
 #
 # Mode is auto-detected:
 #   Docker  — docker compose running in ./docker/
+#   Podman  — podman compose running in ./podman/
 #   K8s     — kubectl can reach a cluster with fake-service pods
-#   Override with: DEMO_MODE=docker  or  DEMO_MODE=k8s
+#   Override with: DEMO_MODE=docker  or  DEMO_MODE=podman  or  DEMO_MODE=k8s
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -25,6 +26,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCKER_DIR="$REPO_ROOT/docker"
 DOCKER_ENV="$DOCKER_DIR/.env"
+PODMAN_DIR="$REPO_ROOT/podman"
+PODMAN_ENV="$PODMAN_DIR/.env"
 
 SERVICES=(web api payments cache currency)
 
@@ -59,6 +62,10 @@ detect_mode() {
   if docker compose -f "$DOCKER_DIR/docker-compose.yml" ps --status running \
       --format json 2>/dev/null | grep -q '"web"'; then
     echo "docker"
+    return
+  fi
+  if podman compose -f "$PODMAN_DIR/podman-compose.yml" ps 2>/dev/null | grep -q "web"; then
+    echo "podman"
     return
   fi
   if kubectl get pods -n default -l 'app in (web,api)' \
@@ -120,6 +127,68 @@ docker_status() {
     local prefix="${svc^^}"
     local err; err=$(grep "^${prefix}_ERROR_RATE=" "$DOCKER_ENV" 2>/dev/null | cut -d= -f2 || echo "0")
     local lat; lat=$(grep "^${prefix}_LATENCY_P50=" "$DOCKER_ENV" 2>/dev/null | cut -d= -f2 || echo "1ms")
+    if [[ "$err" != "0" ]] || [[ "$lat" != "1ms" ]]; then
+      printf "  ${RED}%-12s${RESET}  error_rate=%-6s  p50_latency=%s  ${YELLOW}← FAULT${RESET}\n" "$svc" "$err" "$lat"
+    else
+      printf "  ${GREEN}%-12s${RESET}  error_rate=%-6s  p50_latency=%s\n" "$svc" "$err" "$lat"
+    fi
+  done
+  echo ""
+}
+
+# ── Fault injection — Podman ──────────────────────────────────────────────────
+podman_set_env() {
+  local service="$1"; local key="$2"; local val="$3"
+  local prefix; prefix="${service^^}"
+  local env_key="${prefix}_${key}"
+  # Seed .env from example if missing
+  [[ -f "$PODMAN_ENV" ]] || cp "$PODMAN_DIR/.env.example" "$PODMAN_ENV"
+  if grep -q "^${env_key}=" "$PODMAN_ENV" 2>/dev/null; then
+    sed -i.bak "s|^${env_key}=.*|${env_key}=${val}|" "$PODMAN_ENV" && rm -f "${PODMAN_ENV}.bak"
+  else
+    echo "${env_key}=${val}" >> "$PODMAN_ENV"
+  fi
+}
+
+podman_inject_errors() {
+  local service="$1"; local rate="$2"
+  podman_set_env "$service" "ERROR_RATE" "$rate"
+  step "Restarting $service with ERROR_RATE=$rate ..."
+  podman compose -f "$PODMAN_DIR/podman-compose.yml" \
+    --env-file "$PODMAN_ENV" up -d --force-recreate "$service"
+  info "$service restarting — will return ~$(printf '%.0f' "$(echo "$rate * 100" | bc -l)")% HTTP 500"
+}
+
+podman_inject_latency() {
+  local service="$1"; local latency="$2"
+  podman_set_env "$service" "LATENCY_P50" "$latency"
+  podman_set_env "$service" "LATENCY_P90" "$latency"
+  podman_set_env "$service" "LATENCY_P99" "$latency"
+  step "Restarting $service with latency=${latency} ..."
+  podman compose -f "$PODMAN_DIR/podman-compose.yml" \
+    --env-file "$PODMAN_ENV" up -d --force-recreate "$service"
+  info "$service restarting — will add ${latency} to every response"
+}
+
+podman_reset() {
+  step "Resetting all fault injection ..."
+  cp "$PODMAN_DIR/.env.example" "$PODMAN_ENV"
+  step "Restarting fake-service containers ..."
+  podman compose -f "$PODMAN_DIR/podman-compose.yml" \
+    --env-file "$PODMAN_ENV" up -d --force-recreate \
+    web api payments cache currency
+  info "All services reset to 0% errors / 1ms latency"
+}
+
+podman_status() {
+  echo ""
+  echo -e "  ${BOLD}Current fault injection${RESET}"
+  echo ""
+  [[ -f "$PODMAN_ENV" ]] || cp "$PODMAN_DIR/.env.example" "$PODMAN_ENV"
+  for svc in "${SERVICES[@]}"; do
+    local prefix="${svc^^}"
+    local err; err=$(grep "^${prefix}_ERROR_RATE=" "$PODMAN_ENV" 2>/dev/null | cut -d= -f2 || echo "0")
+    local lat; lat=$(grep "^${prefix}_LATENCY_P50=" "$PODMAN_ENV" 2>/dev/null | cut -d= -f2 || echo "1ms")
     if [[ "$err" != "0" ]] || [[ "$lat" != "1ms" ]]; then
       printf "  ${RED}%-12s${RESET}  error_rate=%-6s  p50_latency=%s  ${YELLOW}← FAULT${RESET}\n" "$svc" "$err" "$lat"
     else
@@ -198,7 +267,7 @@ print_urls() {
   link "$JAEGER/search?service=web            → Jaeger          (distributed traces)"
   link "$CONSUL_UI/ui/dc1/services            → Consul UI       (service topology + intentions)"
   link "$PROM/graph                           → Prometheus      (raw metric explorer)"
-  if [[ "$mode" == "docker" ]]; then
+  if [[ "$mode" == "docker" ]] || [[ "$mode" == "podman" ]]; then
     echo ""
     note "  App: curl http://localhost:21000/   (routed through Envoy)"
   else
@@ -446,17 +515,20 @@ if [[ $# -gt 0 ]]; then
     --inject-errors)
       SERVICE="${2:?Usage: demo.sh --inject-errors <service> <rate>}"
       RATE="${3:?Usage: demo.sh --inject-errors <service> <rate>}"
-      if [[ "$MODE" == "docker" ]]; then docker_inject_errors "$SERVICE" "$RATE"
+      if   [[ "$MODE" == "docker" ]]; then docker_inject_errors "$SERVICE" "$RATE"
+      elif [[ "$MODE" == "podman" ]]; then podman_inject_errors "$SERVICE" "$RATE"
       else k8s_inject_errors "$SERVICE" "$RATE"; fi
       ;;
     --inject-latency)
       SERVICE="${2:?Usage: demo.sh --inject-latency <service> <latency>}"
       LATENCY="${3:?Usage: demo.sh --inject-latency <service> <latency>}"
-      if [[ "$MODE" == "docker" ]]; then docker_inject_latency "$SERVICE" "$LATENCY"
+      if   [[ "$MODE" == "docker" ]]; then docker_inject_latency "$SERVICE" "$LATENCY"
+      elif [[ "$MODE" == "podman" ]]; then podman_inject_latency "$SERVICE" "$LATENCY"
       else k8s_inject_latency "$SERVICE" "$LATENCY"; fi
       ;;
     --reset)
-      if [[ "$MODE" == "docker" ]]; then docker_reset
+      if   [[ "$MODE" == "docker" ]]; then docker_reset
+      elif [[ "$MODE" == "podman" ]]; then podman_reset
       else k8s_reset; fi
       ;;
     --open)
@@ -484,13 +556,15 @@ echo ""
 MODE=$(detect_mode)
 case "$MODE" in
   docker) echo -e "  ${GREEN}Mode: Docker Compose${RESET}  — single Envoy gateway proxying web" ;;
+  podman) echo -e "  ${GREEN}Mode: Podman Compose${RESET}  — single Envoy gateway proxying web" ;;
   k8s)    echo -e "  ${GREEN}Mode: Kubernetes${RESET}     — per-service Envoy sidecars (full mesh)" ;;
   *)
     warn "Could not detect a running stack."
     echo ""
     echo "  Start the demo first:"
     echo "    Docker:  task docker:up"
-    echo "    K8s:     task k8s:up && task k8s:open"
+    echo "    Podman:  task podman:up"
+    echo "    K8s:     task k8s:up"
     echo ""
     exit 1
     ;;
@@ -517,7 +591,8 @@ ruler
 
 while true; do
   echo ""
-  if [[ "$MODE" == "docker" ]]; then docker_status
+  if   [[ "$MODE" == "docker" ]]; then docker_status
+  elif [[ "$MODE" == "podman" ]]; then podman_status
   else k8s_status; fi
 
   echo -e "  ${BOLD}Choose an action:${RESET}"
@@ -547,7 +622,8 @@ while true; do
       echo -n "  Error rate [0.0–1.0  e.g. 0.3 = 30% fail]: "
       read -r RATE
       echo ""
-      if [[ "$MODE" == "docker" ]]; then docker_inject_errors "$SVC" "$RATE"
+      if   [[ "$MODE" == "docker" ]]; then docker_inject_errors "$SVC" "$RATE"
+      elif [[ "$MODE" == "podman" ]]; then podman_inject_errors "$SVC" "$RATE"
       else k8s_inject_errors "$SVC" "$RATE"; fi
       explain_errors "$SVC" "$RATE"
       link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Service Health (error rate panel)"
@@ -566,7 +642,8 @@ while true; do
       echo -n "  Latency [e.g. 200ms / 500ms / 1s / 2s]: "
       read -r LAT
       echo ""
-      if [[ "$MODE" == "docker" ]]; then docker_inject_latency "$SVC" "$LAT"
+      if   [[ "$MODE" == "docker" ]]; then docker_inject_latency "$SVC" "$LAT"
+      elif [[ "$MODE" == "podman" ]]; then podman_inject_latency "$SVC" "$LAT"
       else k8s_inject_latency "$SVC" "$LAT"; fi
       explain_latency "$SVC" "$LAT"
       link "$GRAFANA/d/${UID_SERVICE_TO_SERVICE}  → Service-to-Service (P50/P95/P99 panel)"
@@ -576,7 +653,8 @@ while true; do
 
     3)
       echo ""
-      if [[ "$MODE" == "docker" ]]; then TARGET="http://localhost:21000/"
+      if   [[ "$MODE" == "docker" ]]; then TARGET="http://localhost:21000/"
+      elif [[ "$MODE" == "podman" ]]; then TARGET="http://localhost:21000/"
       else TARGET="http://localhost:9090/"; fi
       step "Sending burst traffic for 30s to $TARGET ..."
       END=$(($(date +%s) + 30)); COUNT=0
@@ -594,7 +672,8 @@ while true; do
 
     4)
       echo ""
-      if [[ "$MODE" == "docker" ]]; then docker_reset
+      if   [[ "$MODE" == "docker" ]]; then docker_reset
+      elif [[ "$MODE" == "podman" ]]; then podman_reset
       else k8s_reset; fi
       explain_reset
       link "$GRAFANA/d/${UID_SERVICE_HEALTH}  → Watch error rate return to 0"
@@ -603,15 +682,16 @@ while true; do
 
     5)
       echo ""
-      # Docker: eject web (the only backend behind Envoy)
+      # Docker/Podman: eject web (the only backend behind Envoy)
       # K8s: eject payments (called by api, has currency downstream)
-      if [[ "$MODE" == "docker" ]]; then
-        CB_SERVICE="web"
-        TARGET="http://localhost:21000/"
+      if   [[ "$MODE" == "docker" ]]; then
+        CB_SERVICE="web"; TARGET="http://localhost:21000/"
         docker_inject_errors "$CB_SERVICE" "1"
+      elif [[ "$MODE" == "podman" ]]; then
+        CB_SERVICE="web"; TARGET="http://localhost:21000/"
+        podman_inject_errors "$CB_SERVICE" "1"
       else
-        CB_SERVICE="payments"
-        TARGET="http://localhost:9090/"
+        CB_SERVICE="payments"; TARGET="http://localhost:9090/"
         k8s_inject_errors "$CB_SERVICE" "1"
       fi
       step "Sending 20 requests to trigger circuit breaker ejection..."

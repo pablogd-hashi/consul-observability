@@ -45,13 +45,9 @@ services {
   tags = ["v1", "frontend"]
 
   check {
-    http     = "http://web:9090/"
+    http     = "http://web:9090/health"
     interval = "10s"
     timeout  = "3s"
-  }
-
-  connect {
-    sidecar_service {}
   }
 }
 
@@ -62,13 +58,9 @@ services {
   tags = ["v1", "backend"]
 
   check {
-    http     = "http://api:9090/"
+    http     = "http://api:9090/health"
     interval = "10s"
     timeout  = "3s"
-  }
-
-  connect {
-    sidecar_service {}
   }
 }
 
@@ -79,13 +71,9 @@ services {
   tags = ["v1", "backend"]
 
   check {
-    http     = "http://payments:9090/"
+    http     = "http://payments:9090/health"
     interval = "10s"
     timeout  = "3s"
-  }
-
-  connect {
-    sidecar_service {}
   }
 }
 
@@ -96,13 +84,9 @@ services {
   tags = ["v1", "backend"]
 
   check {
-    http     = "http://currency:9090/"
+    http     = "http://currency:9090/health"
     interval = "10s"
     timeout  = "3s"
-  }
-
-  connect {
-    sidecar_service {}
   }
 }
 
@@ -113,12 +97,8 @@ services {
   tags = ["v1", "backend"]
 
   check {
-    http     = "http://cache:9090/"
+    http     = "http://cache:9090/health"
     interval = "10s"
     timeout  = "3s"
-  }
-
-  connect {
-    sidecar_service {}
   }
 }
