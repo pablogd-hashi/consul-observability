@@ -1,6 +1,6 @@
 # Consul Observability Demo
 
-A hands-on demo of the three pillars of observability — **metrics**, **logs**, and **traces** — inside a Consul service mesh, extended with an **API Gateway** (north-south entry point) and a **Terminating Gateway** (controlled mesh exit to an external service). Runs identically on Docker Compose (local) and Kubernetes (kind/minikube/EKS/GKE).
+A hands-on demo of the three pillars of observability — **metrics**, **logs**, and **traces** — inside a Consul service mesh, extended with an **API Gateway** (north-south entry point) and a **Terminating Gateway** (controlled mesh exit to an external service). Runs identically on Docker Compose, Podman Compose (rootless; RHEL/Fedora/macOS), and Kubernetes (kind/minikube/EKS/GKE).
 
 The demo app is [fake-service](https://github.com/nicholasjackson/fake-service), a lightweight configurable HTTP service that simulates a realistic multi-tier call chain — no custom code to build or maintain.
 
@@ -25,7 +25,7 @@ The demo app is [fake-service](https://github.com/nicholasjackson/fake-service),
 
 ```
 [client]
-   └─► API Gateway :21001 (Docker) / :18080 (K8s)
+   └─► API Gateway :21001 (Docker/Podman) / :18080 (K8s)
          └─► web :9090
                └─► api :9090
                      ├─► payments :9090
@@ -35,7 +35,7 @@ The demo app is [fake-service](https://github.com/nicholasjackson/fake-service),
 ```
 
 All services send **Zipkin traces** to the OTel Collector → Jaeger.
-Envoy writes **JSON access logs** → OTel filelog receiver (Docker) / Promtail (K8s) → Loki.
+Envoy writes **JSON access logs** → OTel filelog receiver (Docker/Podman) / Promtail (K8s) → Loki.
 Prometheus scrapes **Envoy metrics** (`:20200/stats/prometheus`), **Consul** (`/v1/agent/metrics`), and **gateway metrics**.
 
 ---
@@ -49,7 +49,7 @@ Prometheus scrapes **Envoy metrics** (`:20200/stats/prometheus`), **Consul** (`/
 | Consul | `hashicorp/consul:1.22.3` | 8500 |
 | web, api, payments, currency, cache | `nicholasjackson/fake-service:v0.26.2` | 9090 (internal) |
 | rates | `nicholasjackson/fake-service:v0.26.2` | 9090 (external, no connect) |
-| Envoy proxy (sidecar) | `envoyproxy/envoy:v1.32.2` | 20200 (metrics), 21000 (entry) |
+| Envoy sidecar | `envoyproxy/envoy:v1.32.2` | 20200 (metrics), 21000 (entry) |
 | API Gateway | `envoyproxy/envoy:v1.32.2` | 21001 (HTTP), 20201 (admin/metrics) |
 | Terminating Gateway | `envoyproxy/envoy:v1.32.2` | 9190 (egress), 20202 (admin/metrics) |
 | Prometheus | `prom/prometheus:v2.52.0` | 9090 |
@@ -61,6 +61,9 @@ Prometheus scrapes **Envoy metrics** (`:20200/stats/prometheus`), **Consul** (`/
 ### Quick start
 
 ```bash
+# Pre-pull images (avoids timeout on first startup)
+task docker:pull
+
 # Start the full stack
 task docker:up
 
@@ -71,27 +74,97 @@ task validate
 task demo
 ```
 
-Or without Task:
+Without Task:
 
 ```bash
-cd docker
-docker compose up -d
-docker compose ps
+docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml ps
 ```
 
 ### Endpoints — Docker Compose
 
 | Service | URL | Notes |
 |---------|-----|-------|
-| App (sidecar Envoy) | http://localhost:21000 | Direct Envoy proxy |
+| App (sidecar Envoy) | http://localhost:21000 | Direct sidecar proxy |
 | App (API Gateway) | http://localhost:21001 | North-south entry point |
 | Consul UI | http://localhost:8500 | Service health + topology |
 | Grafana | http://localhost:3000 | admin / admin |
 | Jaeger UI | http://localhost:16686 | Search service: `web` |
 | Prometheus | http://localhost:9090 | |
-| Envoy metrics | http://localhost:20200/stats/prometheus | Sidecar raw metrics |
+| Envoy sidecar metrics | http://localhost:20200/stats/prometheus | Raw sidecar metrics |
 | API Gateway metrics | http://localhost:20201/stats/prometheus | Gateway raw metrics |
 | Loki | http://localhost:3100 | |
+
+---
+
+## Podman Compose
+
+Same stack, same config files — `podman/podman-compose.yml` points back to `docker/` for all configs. Bind mounts include `:z` for SELinux relabeling (no-op on macOS).
+
+### Prerequisites
+
+```
+podman        >= 4.0
+podman-compose    brew install podman-compose  (or: pip3 install podman-compose)
+```
+
+> **Important**: install `podman-compose` explicitly. Without it, `podman compose` falls back to
+> Docker's CLI plugin (`docker-compose`), which runs containers against the Docker daemon instead
+> of Podman. The brew/pip package ensures the stack runs under Podman.
+
+macOS only — start the Podman machine first:
+
+```bash
+podman machine init    # one-time setup (creates a Linux VM)
+podman machine start
+```
+
+### Quick start
+
+```bash
+# Pre-pull images
+task podman:pull
+
+# Start the full stack
+task podman:up
+
+# Verify everything is running
+task validate
+
+# Interactive demo
+task demo
+```
+
+Without Task:
+
+```bash
+cd podman
+cp .env.example .env
+podman compose -f podman-compose.yml up -d
+podman compose -f podman-compose.yml ps
+```
+
+### Endpoints — Podman Compose
+
+Identical to Docker Compose — same ports, same URLs:
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| App (sidecar Envoy) | http://localhost:21000 | Direct sidecar proxy |
+| App (API Gateway) | http://localhost:21001 | North-south entry point |
+| Consul UI | http://localhost:8500 | |
+| Grafana | http://localhost:3000 | admin / admin |
+| Jaeger UI | http://localhost:16686 | |
+| Prometheus | http://localhost:9090 | |
+| API Gateway metrics | http://localhost:20201/stats/prometheus | |
+| Loki | http://localhost:3100 | |
+
+### Podman notes
+
+- **Rootless**: containers run without root privileges. `user: root` inside Envoy containers maps to your host user UID — named volumes are always writable.
+- **SELinux**: the `:z` flag on bind mounts relabels the host path so the container can read it. Silently ignored on macOS and systems without SELinux enforcing.
+- **macOS**: `podman machine` runs a lightweight Linux VM. `podman machine stop` when you're done to free resources.
+- **`podman-compose` required**: without it, `podman compose` falls back to Docker's CLI plugin and the stack runs under Docker, not Podman.
 
 ---
 
@@ -129,7 +202,7 @@ The script:
 8. Applies Kubernetes Gateway API resources (GatewayClass, Gateway, HTTPRoute)
 9. Patches the API Gateway Service to NodePort 30004
 
-> **Note:** If you have an existing cluster created before this branch, run `task k8s:down && task k8s:up` — the new kind port mapping and Gateway API CRDs require a fresh cluster.
+> **Note:** If you have an existing cluster created before the gateways branch, run `task k8s:down && task k8s:up` — the new kind port mapping and Gateway API CRDs require a fresh cluster.
 
 ### Access the services
 
@@ -213,15 +286,15 @@ Transparent proxy (`connectInject.transparentProxy.defaultEnabled: true`) interc
     Term. Gateway — controlled egress; the only exit path to external services
 
   Ports:
-    Docker  →  API GW :21001  |  TGW :9190  |  sidecars :20200 (metrics)
-    K8s     →  API GW :18080  |  TGW cluster-internal  |  sidecars :20200
+    Docker/Podman  →  API GW :21001  |  TGW :9190  |  sidecar :20200 (metrics)
+    K8s            →  API GW :18080  |  TGW cluster-internal  |  sidecars :20200
 ```
 
 ### API Gateway
 
 The API Gateway is the **north-south entry point** — external clients send traffic here, and the gateway routes it into the mesh.
 
-- **Docker**: static Envoy JSON config (consistent with the sidecar pattern used in this demo). Listener on `:21001`. Includes a local rate limiter (100 req/s fill rate, burst 200 — requests above this return HTTP 429).
+- **Docker/Podman**: static Envoy JSON config. Listener on `:21001`. Includes a local rate limiter (100 req/s fill rate, burst 200 — requests above this return HTTP 429).
 - **K8s**: managed by the Consul Helm chart via the [Kubernetes Gateway API](https://gateway-api.sigs.k8s.io/). `GatewayClass + Gateway + HTTPRoute` CRDs route traffic to the `web` service. Exposed as NodePort 30004 → `localhost:18080`.
 
 **How it differs from a sidecar:**
@@ -236,7 +309,7 @@ The API Gateway is the **north-south entry point** — external clients send tra
 
 The Terminating Gateway is the **controlled mesh exit point** — mesh services reach external or legacy services through it.
 
-- **Docker**: static Envoy JSON on port `9190`. Routes `currency` → `rates` (external).
+- **Docker/Podman**: static Envoy JSON on port `9190`. Routes `currency` → `rates` (external).
 - **K8s**: enabled via `terminatingGateways` in the Consul Helm chart. A `TerminatingGateway` CRD declares which external services are reachable. `currency` uses transparent proxy; the Consul CNI intercepts the call to `rates` and routes it through the TGW.
 
 Traffic flow: `payments → currency → TGW → rates (external)`. mTLS terminates at the TGW; the last mile to `rates` is plain HTTP.
@@ -245,7 +318,7 @@ Traffic flow: `payments → currency → TGW → rates (external)`. mTLS termina
 
 `rates` is an external service — it runs as a plain fake-service container **without** Consul Connect inject. It simulates a third-party pricing API that the mesh cannot directly reach (must go through the Terminating Gateway).
 
-Fault injection works on `rates` the same way as any other service. Set `RATES_ERROR_RATE` in `docker/.env` (Docker) or `kubectl set env deployment/rates ERROR_RATE=0.3` (K8s) to inject errors on the external call.
+Fault injection works on `rates` the same way as any other service. Set `RATES_ERROR_RATE` in `docker/.env` (Docker/Podman) or `kubectl set env deployment/rates ERROR_RATE=0.3` (K8s) to inject errors on the external call.
 
 ---
 
@@ -267,7 +340,7 @@ When a backend returns **N consecutive 5xx responses** (default: 5), Envoy marks
 
 **Why this matters:** Without circuit breaking, a failing backend causes every caller to wait for the full request timeout before returning an error. With circuit breaking, Envoy fast-fails at the proxy layer — callers get immediate 503s with near-zero latency instead of a cascade of slow timeouts.
 
-### Key metrics (Envoy outlier detection)
+### Key metrics
 
 | Metric | Type | What it shows |
 |--------|------|---------------|
@@ -279,35 +352,18 @@ When a backend returns **N consecutive 5xx responses** (default: 5), Envoy marks
 
 The **Service Health** dashboard has a **Circuit Breaker** section with two panels:
 
-- **Active Circuit Breakers** — timeseries showing currently ejected hosts per service pair (`local_cluster → consul_destination_service`)
-- **Circuit Breakers Triggered** — bar gauge showing peak consecutive 5xx ejections per service over the selected time range
-
-### Demo: triggering a circuit breaker
-
-```bash
-# Inject 100% errors on the payments service
-kubectl set env deployment/payments ERROR_RATE=1.0 -n default
-
-# Within seconds Envoy ejects payments from the upstream pool:
-#   - Callers (api) get 503s immediately (no waiting for timeout)
-#   - "Active Circuit Breakers" panel goes to 1
-#   - Request latency drops to near-zero (fast-fail, no upstream wait)
-
-# Restore
-kubectl set env deployment/payments ERROR_RATE=0 -n default
-```
+- **Active Circuit Breakers** — timeseries showing currently ejected hosts per service pair
+- **Circuit Breakers Triggered** — bar gauge showing peak consecutive 5xx ejections over the selected time range
 
 ---
 
 ## Demo walkthrough
 
-Run the interactive demo script:
+Run the interactive demo script — it auto-detects Docker, Podman, or Kubernetes:
 
 ```bash
 task demo
 ```
-
-Options:
 
 | # | Action | What it shows |
 |---|--------|---------------|
@@ -316,9 +372,22 @@ Options:
 | 3 | Load test | 30s burst of traffic → RPS spike in Service Health dashboard |
 | 4 | Reset all faults | Restore baseline (0 errors, 1ms latency) |
 | 5 | Circuit breaking | 100% errors → Envoy ejects backend → 503s with near-zero latency |
-| 6 | Gateway load test | 30s of traffic through API Gateway + TGW → rates path |
+| 6 | Gateway load test | 30s of traffic through API Gateway → TGW → rates path |
 | 7 | Show URLs | Print all dashboard URLs |
 | 8 | Open all UIs | Open Grafana, Jaeger, Consul in browser |
+
+Non-interactive (useful from scripts):
+
+```bash
+# Inject 30% errors on payments
+./scripts/demo.sh --inject-errors payments 0.3
+
+# Add 500ms latency to api
+./scripts/demo.sh --inject-latency api 500ms
+
+# Reset everything
+./scripts/demo.sh --reset
+```
 
 ### Fault injection
 
@@ -327,11 +396,11 @@ Each fake-service reads environment variables at startup:
 | Variable | Effect | Example |
 |----------|--------|---------|
 | `ERROR_RATE` | Fraction of requests that return HTTP 500 | `0.3` = 30% errors |
-| `TIMING_50_PERCENTILE` | P50 added sleep (K8s: `TIMING_50_PERCENTILE`) | `500ms` |
+| `TIMING_50_PERCENTILE` | P50 added sleep | `500ms` |
 | `TIMING_90_PERCENTILE` | P90 added sleep | `500ms` |
 | `TIMING_99_PERCENTILE` | P99 added sleep | `500ms` |
 
-Docker: variables come from `docker/.env` (copy `docker/.env.example` for defaults). Each service has a prefixed variable: `PAYMENTS_ERROR_RATE=0.3`, `CACHE_LATENCY_P50=200ms`, etc.
+Docker/Podman: variables come from `docker/.env` or `podman/.env` (copy from `.env.example`). Each service has a prefixed variable: `PAYMENTS_ERROR_RATE=0.3`, `CACHE_LATENCY_P50=200ms`, `RATES_ERROR_RATE=0.5`, etc.
 
 K8s: `kubectl set env deployment/<service> ERROR_RATE=0.3 -n default` triggers a rolling restart.
 
@@ -344,7 +413,7 @@ All dashboards auto-provision under **Consul Observability** in Grafana.
 | Dashboard | Datasource(s) | What it shows |
 |-----------|---------------|---------------|
 | **Service-to-Service Traffic** | Prometheus + Jaeger | Entry-point RPS, error rate, latency percentiles, distributed trace waterfall, service dependency node graph |
-| **Consul Service Health** | Prometheus | Cluster membership, registered services, health checks, raft stability |
+| **Consul Service Health** | Prometheus | Cluster membership, registered services, health checks, raft stability, circuit breaker status |
 | **Envoy Access Logs** | Loki | Live access log stream, request rate by status code, error counts |
 | **Consul Gateways** | Prometheus | API Gateway RPS / error rate / P99 / rate limited requests; Terminating Gateway external RPS / error rate / active connections |
 
@@ -352,13 +421,13 @@ All dashboards auto-provision under **Consul Observability** in Grafana.
 
 The **Service-to-Service Traffic** dashboard includes a node graph panel that shows the live service topology derived from traces. The OTel Collector's `servicegraph` connector counts span pairs and emits `traces_service_graph_request_total{client, server}` → scraped by Prometheus → powers the graph in Grafana.
 
-After running any load (background loadgen generates 1 req/2s), edges appear between services: `web → api → payments → currency → rates` and `api → cache`. The `rates` node appears as an extra hop via the Terminating Gateway.
+After running any load (background loadgen generates traffic every 2s), edges appear between services: `web → api → payments → currency → rates` and `api → cache`. The `rates` node appears as an extra hop via the Terminating Gateway.
 
 ---
 
 ## Architecture
 
-### Docker Compose
+### Docker Compose / Podman Compose
 
 ```
 [client]
@@ -417,7 +486,7 @@ Consul :8500          otel-collector          Grafana :3000 ◄─────�
 |------|---------|
 | `docker/docker-compose.yml` | All services, network, volumes |
 | `docker/consul/consul.hcl` | Consul config + service registrations (incl. api-gateway, terminating-gateway, rates) |
-| `docker/envoy/envoy-access-log.json` | Sidecar Envoy (web proxy, port 21000, JSON access logs, Zipkin tracing) |
+| `docker/envoy/envoy-access-log.json` | Sidecar Envoy (port 21000, JSON access logs, Zipkin tracing) |
 | `docker/envoy/envoy-api-gateway.json` | API Gateway Envoy (port 21001, rate limiter 100 req/s, routes to web) |
 | `docker/envoy/envoy-terminating-gateway.json` | Terminating Gateway Envoy (port 9190, routes to rates:9090) |
 | `docker/prometheus/prometheus.yml` | Scrape configs (consul, envoy sidecar, api-gateway, terminating-gateway, otel-collector) |
@@ -427,17 +496,26 @@ Consul :8500          otel-collector          Grafana :3000 ◄─────�
 | `docker/grafana/dashboards/` | Four dashboard JSON files (service-health, service-to-service, logs, gateways) |
 | `docker/.env.example` | Default fault-injection variables for all services including `rates` |
 
+### Podman Compose
+
+| File | Purpose |
+|------|---------|
+| `podman/podman-compose.yml` | Compose file; bind mounts point to `docker/` configs with `:z` SELinux flag |
+| `podman/.env.example` | Fault injection env vars (copy to `.env` to override) |
+
+All Consul, Envoy, Prometheus, OTel, Loki, and Grafana configs are shared from `docker/`.
+
 ### Kubernetes
 
 | File | Purpose |
 |------|---------|
 | `kubernetes/consul/values.yaml` | Consul Helm values (Connect inject, ACLs, TLS, metrics, API Gateway, Terminating Gateway) |
 | `kubernetes/consul/gateway/` | GatewayClass, Gateway, HTTPRoute, TerminatingGateway CRD resources |
-| `kubernetes/consul/config-entries/` | ServiceIntentions (allow traffic between services), ServiceDefaults (protocol: http) |
+| `kubernetes/consul/config-entries/` | ServiceIntentions, ServiceDefaults (protocol: http) |
 | `kubernetes/services/fake-service/` | Deployments + Services for web, api, payments, currency, cache, rates |
-| `kubernetes/observability/otel-collector.yaml` | OTel Collector with servicegraph connector (no metric namespace prefix) |
+| `kubernetes/observability/otel-collector.yaml` | OTel Collector with servicegraph connector |
 | `kubernetes/observability/prometheus.yaml` | Prometheus with consul-gateways scrape job |
-| `kubernetes/observability/promtail.yaml` | Promtail with pipeline stage to add `service_name`/`log_source` labels to consul-dataplane logs |
+| `kubernetes/observability/promtail.yaml` | Promtail with pipeline stage for consul-dataplane access logs |
 | `kubernetes/observability/grafana.yaml` | Grafana with all four dashboards embedded |
 | `kubernetes/observability/jaeger.yaml` | Jaeger all-in-one |
 | `kubernetes/observability/loki.yaml` | Loki single-binary |
@@ -445,18 +523,44 @@ Consul :8500          otel-collector          Grafana :3000 ◄─────�
 
 ---
 
-## Taskfile
+## Task reference
+
+All tasks run from the repo root. Run `task` (no arguments) to list all available tasks.
+
+### Docker
 
 ```bash
-task            # List all tasks
+task docker:up       # Start stack (detached)
+task docker:down     # Stop (keep volumes)
+task docker:pull     # Pre-pull all images
+task docker:ps       # Show container status
+task docker:logs     # Tail all logs (Ctrl-C to stop)
+```
 
-task docker:up   # Start Docker Compose stack
-task docker:down # Stop Docker Compose
-task validate    # Health check (auto-detects Docker vs K8s)
-task demo        # Interactive demo (fault injection, load tests, gateways)
+### Podman
 
-task k8s:up      # Bootstrap kind cluster (~5-10 min)
-task k8s:down    # Delete kind cluster + stop port-forwards
+```bash
+task podman:up       # Start stack (detached); creates .env from .env.example if missing
+task podman:down     # Stop (keep volumes)
+task podman:clean    # Stop and remove all volumes
+task podman:pull     # Pre-pull all images with podman pull
+task podman:ps       # Show container status
+task podman:logs     # Tail all logs (Ctrl-C to stop)
+task podman:restart  # Restart all services
+```
+
+### Kubernetes
+
+```bash
+task k8s:up          # Bootstrap kind cluster (~5-10 min)
+task k8s:down        # Delete kind cluster (full teardown)
+```
+
+### Shared
+
+```bash
+task validate        # Health check — auto-detects Docker / Podman / K8s, prints status + URLs
+task demo            # Interactive demo — auto-detects Docker / Podman / K8s
 ```
 
 ---
@@ -465,12 +569,7 @@ task k8s:down    # Delete kind cluster + stop port-forwards
 
 ### Grafana shows "No data" for the Service Dependency Map (K8s)
 
-Both the node and edge queries use `traces_service_graph_request_total` emitted by the OTel Collector's `servicegraph` connector. There is no dependency on Envoy metric scraping — the graph is entirely trace-driven:
-
-- **Nodes** (Query A): unique services derived via `label_replace(..., "node_id", server)` — appears once a service receives its first span
-- **Edges** (Query B): `client → server` pairs — appears once two services exchange a traced request
-
-Wait ~60 seconds for the load generator to drive enough traffic for spans to flow through Envoy → OTel → servicegraph → Prometheus. Verify the metric exists:
+Both node and edge queries use `traces_service_graph_request_total` emitted by the OTel Collector's `servicegraph` connector. Verify the metric exists:
 
 ```bash
 kubectl port-forward svc/otel-collector 8889:8889 -n observability &
@@ -478,14 +577,14 @@ curl -s http://localhost:8889/metrics | grep traces_service_graph
 # Expected: traces_service_graph_request_total{client="web",server="api",...}
 ```
 
-If the metric is missing, check that Envoy sidecars are sending Zipkin traces:
+If missing, check that Envoy sidecars are sending Zipkin traces:
 ```bash
 kubectl logs -n observability deploy/otel-collector | grep -i "zipkin\|spans\|error"
 ```
 
 ### Grafana shows "No data" for Envoy Access Logs panels (K8s)
 
-Logs are collected by Promtail and labeled with `service_name=envoy-sidecar, log_source=access-log` (set by the `match` pipeline stage for `consul-dataplane` containers). Verify labels reached Loki:
+Verify labels reached Loki:
 
 ```bash
 kubectl port-forward svc/loki 3100:3100 -n observability &
@@ -495,7 +594,7 @@ curl -s 'http://localhost:3100/loki/api/v1/label/service_name/values' | jq .
 
 ### Jaeger shows no traces
 
-Envoy sidecars send Zipkin B3 spans to `otel-collector:9411`. Check the OTel collector is running and the zipkin receiver is listening:
+Envoy sidecars send Zipkin B3 spans to `otel-collector:9411`:
 
 ```bash
 kubectl logs -n observability deploy/otel-collector | grep -i zipkin
@@ -503,9 +602,49 @@ kubectl logs -n observability deploy/otel-collector | grep -i zipkin
 
 ### API Gateway not accessible (K8s)
 
-The API Gateway is exposed on NodePort 30004 → `localhost:18080` (no port-forward needed for kind). If the cluster was created before this branch, recreate it with `task k8s:down && task k8s:up` to get the new kind port mapping.
+The API Gateway is exposed on NodePort 30004 → `localhost:18080` (no port-forward needed for kind). If the cluster was created before the gateways branch, recreate it with `task k8s:down && task k8s:up`.
 
 ```bash
 kubectl get svc api-gateway -n consul
 curl -s http://localhost:18080/
 ```
+
+### All services red in Consul UI
+
+Consul's health checks call `/health` on each fake-service. This is a lightweight liveness endpoint — it does **not** call upstreams, so a slow chain startup cannot cause cascading failures. If services are still red, check:
+
+```bash
+# See exactly what's failing
+curl -s http://localhost:8500/v1/health/state/critical | jq '.[].Output'
+```
+
+The most common cause is `connect { sidecar_service {} }` left in `consul.hcl` — it registers sidecar proxy slots with TCP checks that fail when no sidecar process is listening. Remove those blocks; they are not needed in Docker/Podman.
+
+---
+
+## Environment variables
+
+Fault injection is controlled via an `.env` file in the relevant directory:
+
+```bash
+# docker/.env or podman/.env  (copy from .env.example)
+
+# Error rate per service (0.0 = no errors, 1.0 = 100% errors)
+PAYMENTS_ERROR_RATE=0
+CURRENCY_ERROR_RATE=0
+CACHE_ERROR_RATE=0
+API_ERROR_RATE=0
+WEB_ERROR_RATE=0
+RATES_ERROR_RATE=0
+
+# Latency per service (P50/P90/P99; set all three to the same value for a flat delay)
+PAYMENTS_LATENCY_P50=1ms
+PAYMENTS_LATENCY_P90=1ms
+PAYMENTS_LATENCY_P99=1ms
+# ... (repeated for currency, cache, api, web, rates)
+
+# Grafana admin password (default: admin)
+GRAFANA_ADMIN_PASSWORD=admin
+```
+
+`task demo` manages these files automatically. Edit manually only if you need persistent fault state across `demo` sessions.
