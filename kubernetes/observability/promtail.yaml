@@ -1,0 +1,199 @@
+# kubernetes/observability/promtail.yaml
+# Promtail DaemonSet — scrapes Kubernetes pod logs from every node's
+# /var/log/pods and ships them to Loki with labels:
+#   namespace, pod, container, app
+#
+# The "Envoy Access Logs" Grafana dashboard queries:
+#   {namespace="default", container="consul-dataplane"}
+# which matches the Consul Connect sidecar container that wraps Envoy.
+# Each pod's app label (e.g. app=web) becomes a Loki label so
+# "Rate by Service" panels can group by service name.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: promtail
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: promtail
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/proxy", "pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: promtail
+subjects:
+  - kind: ServiceAccount
+    name: promtail
+    namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: promtail
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config
+  namespace: observability
+data:
+  promtail.yml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
+
+    positions:
+      filename: /tmp/positions.yaml
+
+    clients:
+      - url: http://loki.observability.svc.cluster.local:3100/loki/api/v1/push
+
+    scrape_configs:
+      - job_name: kubernetes-pods
+        kubernetes_sd_configs:
+          - role: pod
+
+        pipeline_stages:
+          # KinD uses containerd which writes CRI-format log files:
+          #   <timestamp> <stream> <flags> <log-body>
+          # The cri stage strips that wrapper so the log field is the raw
+          # application output (e.g. Envoy JSON access log or app JSON log).
+          # Without this stage, Loki's "| json" would fail because the full
+          # CRI-prefixed line is not valid JSON.
+          - cri: {}
+
+          # Add service_name and log_source labels to consul-dataplane sidecar logs.
+          # consul-dataplane is the container Consul Connect injects — it contains
+          # Envoy's JSON access log output.
+          # These labels match the Docker Loki label scheme set by the OTel filelog
+          # receiver, so the "Envoy Access Logs" Grafana dashboard works on both
+          # Docker ({service_name="envoy-sidecar", log_source="access-log"}) and K8s
+          # without environment-specific queries.
+          - match:
+              selector: '{container="consul-dataplane"}'
+              stages:
+                - static_labels:
+                    service_name: envoy-sidecar
+                    log_source: access-log
+
+          # No additional label extraction here — keep stream labels low-cardinality.
+          # The dashboard uses Loki's "| json" pipeline at query time to parse
+          # Envoy fields (response_code, duration, method, path, upstream_host).
+
+        relabel_configs:
+          # Drop pods that are not in a running phase
+          - source_labels: [__meta_kubernetes_pod_phase]
+            regex: Pending|Succeeded|Failed|Completed
+            action: drop
+
+          # Set the node as the host for log routing
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: __host__
+
+          # Promote key k8s metadata as Loki stream labels
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_container_name]
+            target_label: container
+          - source_labels: [__meta_kubernetes_pod_label_app]
+            target_label: app
+
+          # Restrict log collection to namespaces we care about
+          - source_labels: [__meta_kubernetes_namespace]
+            regex: "default|consul|observability"
+            action: keep
+
+          # Construct the exact pod log path:
+          # /var/log/pods/<namespace>_<pod-name>_<pod-uid>/<container-name>/*.log
+          - source_labels:
+              - __meta_kubernetes_namespace
+              - __meta_kubernetes_pod_name
+              - __meta_kubernetes_pod_uid
+              - __meta_kubernetes_pod_container_name
+            target_label: __path__
+            separator: _
+            regex: '(.+)_(.+)_(.+)_(.+)'
+            replacement: /var/log/pods/${1}_${2}_${3}/${4}/*.log
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: promtail
+  namespace: observability
+  labels:
+    app: promtail
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+      annotations:
+        # Opt out of Consul Connect injection — Promtail needs host network access
+        consul.hashicorp.com/connect-inject: "false"
+    spec:
+      serviceAccountName: promtail
+      tolerations:
+        # Allow running on control-plane nodes (required for single-node KinD)
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: promtail
+          image: grafana/promtail:3.1.0
+          args:
+            - "-config.file=/etc/promtail/promtail.yml"
+          env:
+            # Promtail auto-filters K8s SD to the node it runs on.
+            # Without this, os.Hostname() returns the pod name, not the node name,
+            # causing the SD field selector to be spec.nodeName=<pod-name> which
+            # matches zero pods. Setting HOSTNAME to spec.nodeName makes Promtail
+            # use the actual Kubernetes node name for the field selector.
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          ports:
+            - containerPort: 9080
+              name: http
+          volumeMounts:
+            - name: config
+              mountPath: /etc/promtail
+            # /var/log contains /var/log/pods — the CRI log directory
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            # Needed by cri stage to resolve symlinks into the container overlay FS
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      volumes:
+        - name: config
+          configMap:
+            name: promtail-config
+        - name: varlog
+          hostPath:
+            path: /var/log
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers

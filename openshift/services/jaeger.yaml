@@ -1,0 +1,17 @@
+# openshift/services/jaeger.yaml
+# OpenShift Route for Jaeger UI.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: jaeger
+  namespace: observability
+spec:
+  to:
+    kind: Service
+    name: jaeger-query
+  port:
+    targetPort: ui
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

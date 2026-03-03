@@ -1,0 +1,44 @@
+# kubernetes/consul/config-entries/proxy-defaults.yaml
+# Global Envoy proxy configuration applied to ALL sidecars in the mesh.
+# Mirrors the HCL config in: shared/consul/proxy-defaults.hcl
+#
+# Apply: kubectl apply -f proxy-defaults.yaml -n consul
+# Or:    consul config write proxy-defaults.yaml  (if using Consul CLI)
+
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ProxyDefaults
+metadata:
+  name: global
+  namespace: consul
+spec:
+  # ── Prometheus metrics ──────────────────────────────────────────────────
+  # Expose Envoy stats on port 20200 for Prometheus scraping.
+  # connectInject.metrics.defaultEnableMerging=true in Helm values merges
+  # these with app metrics automatically.
+  config:
+    envoy_prometheus_bind_addr: "0.0.0.0:20200"
+
+    # ── Envoy tracing — INTENTIONALLY DISABLED ──────────────────────────
+    # Consul CE does not expose a tracing sampling-rate knob, so Envoy's
+    # HCM defaults to random_sampling={} → 0 %.  That injects the header
+    # x-b3-sampled: 0 into every request, which causes fake-service (and
+    # any B3-aware app) to suppress trace reporting entirely.
+    #
+    # Instead we rely on fake-service's own TRACING_ZIPKIN env-var, which
+    # sends Zipkin spans directly to the OTel Collector — the same model
+    # used in the Docker flavour.  The servicegraph connector in the OTel
+    # pipeline derives the service-to-service topology from those spans.
+
+  # ── Envoy access logs ────────────────────────────────────────────────────
+  # Structured JSON access logs written to stdout of the consul-dataplane
+  # sidecar container. Promtail scrapes the container stdout and labels them
+  # service_name=envoy-sidecar / log_source=access-log so the Grafana
+  # "Envoy Access Logs" dashboard can parse them with LogQL | json.
+  #
+  # Field names match the Grafana dashboard LogQL queries:
+  #   {service_name="envoy-sidecar"} | json | http_status_code >= 500
+  #   {service_name="envoy-sidecar"} | json | duration > 1000
+  accessLogs:
+    enabled: true
+    type: stdout
+    jsonFormat: '{"start_time":"%START_TIME%","method":"%REQ(:METHOD)%","path":"%REQ(X-ENVOY-ORIGINAL-PATH?:PATH)%","protocol":"%PROTOCOL%","http_status_code":"%RESPONSE_CODE%","response_flags":"%RESPONSE_FLAGS%","bytes_received":"%BYTES_RECEIVED%","bytes_sent":"%BYTES_SENT%","duration":"%DURATION%","upstream_cluster":"%UPSTREAM_CLUSTER%","upstream_host":"%UPSTREAM_HOST%","authority":"%REQ(:AUTHORITY)%","request_id":"%REQ(X-REQUEST-ID)%"}'

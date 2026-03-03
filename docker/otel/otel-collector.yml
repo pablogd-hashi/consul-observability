@@ -1,0 +1,195 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  zipkin:
+    endpoint: "0.0.0.0:9411"
+
+  filelog:
+    include:
+      - /var/log/envoy/access.log
+    start_at: beginning
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.start_time
+          layout_type: gotime
+          layout: "2006-01-02T15:04:05.999Z"
+      - type: move
+        from: attributes.method
+        to: attributes["http.method"]
+      - type: move
+        from: attributes.path
+        to: attributes["http.target"]
+      - type: move
+        from: attributes.response_code
+        to: attributes["http.status_code"]
+      - type: move
+        from: attributes.duration
+        to: attributes["http.duration_ms"]
+      - type: move
+        from: attributes.upstream_host
+        to: attributes["net.peer.name"]
+    resource:
+      service.name: envoy-sidecar
+      log.source: access-log
+      # Tell the OTel Loki exporter to promote these resource attributes
+      # as Loki stream labels (dots become underscores):
+      #   service.name → service_name="envoy-sidecar"
+      #   log.source   → log_source="access-log"
+      # Without this hint, resource attrs are stored as unindexed metadata
+      # and {service_name=...} label selectors match nothing.
+      loki.resource.labels: service.name, log.source
+
+# ── Connectors ────────────────────────────────────────────────────────────────
+# servicegraph: reads spans flowing through the traces pipelines and emits
+# traces_service_graph_request_total{client="web",server="api",...} Prometheus
+# metrics.  These power the "Service Dependency Map" node graph in Grafana and
+# work in BOTH Docker (single Envoy, no consul_* labels) and K8s (per-sidecar).
+connectors:
+  servicegraph:
+    latency_histogram_buckets: [1ms, 2ms, 6ms, 10ms, 100ms, 250ms, 500ms, 1000ms]
+    dimensions: []          # extra span attributes to promote as metric labels
+    store:
+      ttl: 10s              # how long to wait for the matching server span
+      max_items: 1000
+    cache_loop: 1s
+    # Allow edge creation from CLIENT spans alone via the peer.service attribute.
+    # The OTel Zipkin receiver translates remoteEndpoint.serviceName → peer.service,
+    # so fake-service outgoing Zipkin CLIENT spans can build edges without a
+    # matching SERVER span arriving (Docker has only one Envoy, not per-service).
+    virtual_node_peer_attributes: ["peer.service"]
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  # ── Fix fake-service span kind for servicegraph ─────────────────────────────
+  # fake-service emits Zipkin "call_upstream" spans WITHOUT kind=CLIENT.
+  # The servicegraph connector ignores UNSPECIFIED-kind spans, so it never
+  # builds edges like web→api or api→payments.  This transform:
+  #   1. Sets kind=SPAN_KIND_CLIENT so the connector matches CLIENT→SERVER pairs
+  #   2. Extracts the hostname from http.url into peer.service as a fallback
+  #      for the virtual_node_peer_attributes path (e.g. when the SERVER span
+  #      arrives in a different pipeline or is missing entirely).
+  transform/fix_client_spans:
+    trace_statements:
+      - context: span
+        statements:
+          - set(kind, SPAN_KIND_CLIENT) where name == "call_upstream"
+          - set(attributes["peer.service"], attributes["http.url"]) where name == "call_upstream" and attributes["http.url"] != nil
+          - replace_pattern(attributes["peer.service"], "^https?://([^:/]+).*$$", "$$1") where attributes["peer.service"] != nil and name == "call_upstream"
+
+  # Drop non-CLIENT spans before they reach the servicegraph connector.
+  # Zipkin's shared-span-ID model means CLIENT and SERVER spans of the same
+  # RPC share one spanID.  When both reach the servicegraph connector it
+  # matches them by (traceID, spanID) and produces shifted edges (e.g.
+  # web→payments instead of api→payments).  Keeping only CLIENT spans forces
+  # the connector to build edges solely from peer.service (set by
+  # transform/fix_client_spans), which is always correct.
+  filter/client_only:
+    error_mode: ignore
+    traces:
+      span:
+        - 'kind != SPAN_KIND_CLIENT'
+
+  # Enrich every span/log with mesh-level attributes for node graph edges
+  attributes/mesh:
+    actions:
+      - key: mesh
+        value: consul
+        action: insert
+      - key: datacenter
+        value: dc1
+        action: insert
+
+  # Tag Zipkin spans (from Envoy) with proxy source so they're distinguishable
+  attributes/envoy:
+    actions:
+      - key: telemetry.source
+        value: envoy-proxy
+        action: insert
+
+  # Explicitly set the Loki label hint on Envoy access log records.
+  # The filelog receiver sets loki.resource.labels on the resource block,
+  # but a dedicated processor guarantees it reaches the Loki exporter.
+  resource/envoy_loki_labels:
+    attributes:
+      - action: upsert
+        key: loki.resource.labels
+        value: "service.name, log.source"
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: false   # don't add exporter=loki label — not useful for queries
+      job: false        # service.name is promoted via loki.resource.labels instead
+      instance: false
+      level: false      # Envoy access logs don't carry severity
+
+  # Exposes traces_service_graph_request_total (and siblings) on :8889
+  # so that Prometheus can scrape the full service-to-service topology.
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: ""         # no prefix — keep metric names as-is
+
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    metrics:
+      address: "0.0.0.0:8888"
+
+  pipelines:
+    # App traces (OTLP from example-app and backend-api)
+    # → Jaeger for trace storage
+    # → servicegraph connector to derive topology metrics
+    traces/app:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/mesh, batch]
+      exporters: [otlp/jaeger, servicegraph]
+
+    # Proxy traces — ALL spans → Jaeger for trace storage
+    # (includes both CLIENT call_upstream and SERVER handle_request spans)
+    traces/proxy:
+      receivers: [zipkin]
+      processors: [memory_limiter, transform/fix_client_spans, attributes/mesh, attributes/envoy, batch]
+      exporters: [otlp/jaeger]
+
+    # Proxy traces — CLIENT-only spans → servicegraph for topology
+    # filter/client_only drops SERVER spans to prevent Zipkin shared-span-ID
+    # conflicts that cause shifted edges (web→payments instead of api→payments).
+    # The servicegraph connector builds edges using peer.service from the
+    # virtual_node_peer_attributes path, which is always correct.
+    traces/proxy_graph:
+      receivers: [zipkin]
+      processors: [memory_limiter, transform/fix_client_spans, filter/client_only, batch]
+      exporters: [servicegraph]
+
+    logs:
+      receivers: [otlp, filelog]
+      processors: [memory_limiter, resource/envoy_loki_labels, batch]
+      exporters: [loki, debug]
+
+    # Service graph metrics derived from traces — scraped by Prometheus on :8889
+    metrics/servicegraph:
+      receivers: [servicegraph]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

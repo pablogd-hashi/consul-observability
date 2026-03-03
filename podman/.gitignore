@@ -1,0 +1,2 @@
+# Active fault-injection env (generated from .env.example by demo.sh / task podman:up)
+.env

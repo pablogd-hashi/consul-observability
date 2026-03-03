@@ -1,0 +1,65 @@
+# kubernetes/consul/config-entries/service-defaults-fake-service.yaml
+# Sets protocol=http for all fake-service services so Consul can apply L7
+# traffic management (intentions, circuit breaking, load balancing) and
+# Envoy will generate per-request metrics (not just per-connection TCP metrics).
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: web
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: api
+  namespace: default
+spec:
+  protocol: http
+  # Passive health check: Consul's abstraction for Envoy outlier detection.
+  # After maxFailures consecutive 5xx, Envoy ejects the upstream backend.
+  # Consul translates this to consecutive_5xx in the Envoy xDS cluster config.
+  upstreamConfig:
+    defaults:
+      passiveHealthCheck:
+        interval: 10s
+        maxFailures: 3
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: payments
+  namespace: default
+spec:
+  protocol: http
+  upstreamConfig:
+    defaults:
+      passiveHealthCheck:
+        interval: 10s
+        maxFailures: 3
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: cache
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: currency
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: rates
+  namespace: default
+spec:
+  protocol: http

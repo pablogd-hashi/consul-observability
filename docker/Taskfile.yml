@@ -1,0 +1,162 @@
+version: "3"
+
+tasks:
+
+  # ── Docker Compose tasks ──────────────────────────────────────────────────
+
+  pull:
+    desc: "Pull all images sequentially to avoid parallel download throttling"
+    cmds:
+      - docker pull hashicorp/consul:1.22.3
+      - docker pull nicholasjackson/fake-service:v0.26.2
+      - docker pull prom/prometheus:v2.52.0
+      - docker pull jaegertracing/all-in-one:1.58
+      - docker pull otel/opentelemetry-collector-contrib:0.103.0
+      - docker pull grafana/loki:3.1.0
+      - docker pull envoyproxy/envoy:v1.32.2
+      - docker pull grafana/grafana:10.4.3
+      - docker pull curlimages/curl:8.7.1
+
+  up:
+    desc: "Start the full observability stack"
+    cmds:
+      - docker compose down --remove-orphans 2>/dev/null || true
+      - docker compose up -d
+
+  down:
+    desc: "Stop and remove containers and volumes"
+    cmds:
+      - docker compose down -v
+
+  restart:
+    desc: "Restart all services"
+    cmds:
+      - docker compose restart
+
+  logs:
+    desc: "Tail logs from all services (Ctrl-C to stop)"
+    cmds:
+      - docker compose logs -f
+
+  ps:
+    desc: "Show running services and their status"
+    cmds:
+      - docker compose ps
+
+  validate:
+    desc: "Validate environment and print service endpoints"
+    cmds:
+      - |
+        echo "==> Checking Docker..."
+        docker version --format 'Client: {{.Client.Version}}  Server: {{.Server.Version}}' || { echo "ERROR: Docker not running"; exit 1; }
+      - |
+        echo "==> Checking Docker Compose..."
+        docker compose version || { echo "ERROR: docker compose plugin not available"; exit 1; }
+      - |
+        echo ""
+        echo "==> App endpoints:"
+        echo "  fake-service (web):  curl http://localhost:21000/"
+        echo "  fake-service UI:     http://localhost:21000/ui"
+        echo ""
+        echo "==> Observability:"
+        echo "  Consul UI        http://localhost:8500  (service health + topology)"
+        echo "  Grafana          http://localhost:3000  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})"
+        echo "    → Service-to-Service Traffic"
+        echo "    → Consul Service Health"
+        echo "    → Envoy Access Logs"
+        echo "  Jaeger UI        http://localhost:16686 (search service: web)"
+        echo "  Prometheus       http://localhost:9090"
+        echo ""
+        echo "==> Infrastructure:"
+        echo "  Envoy metrics    http://localhost:20200/stats/prometheus"
+        echo "  OTLP gRPC        localhost:4317"
+        echo "  Zipkin           localhost:9411"
+        echo ""
+        echo "==> Quick health checks:"
+        echo "  Consul leader:   curl -s http://localhost:8500/v1/status/leader"
+        echo "  Loki ready:      curl -s http://localhost:3100/ready"
+        echo "  Prometheus:      curl -s http://localhost:9090/-/ready"
+        echo "  Web service:     curl -s http://localhost:21000/ | jq ."
+
+  # ── Kubernetes (kind) tasks ───────────────────────────────────────────────
+
+  k8s-setup:
+    desc: "Bootstrap a local kind cluster with the full observability stack"
+    cmds:
+      - bash ../scripts/kind-setup.sh
+
+  k8s-down:
+    desc: "Delete the kind cluster (consul-observability)"
+    vars:
+      CLUSTER: '{{.KIND_CLUSTER | default "consul-observability"}}'
+    cmds:
+      - kind delete cluster --name {{.CLUSTER}}
+
+  k8s-status:
+    desc: "Show pod status across all namespaces"
+    cmds:
+      - kubectl get pods -n consul
+      - kubectl get pods -n observability
+      - kubectl get pods -n default -l 'app in (web,api,payments,currency,cache)'
+
+  k8s-logs:
+    desc: "Tail logs from a specific namespace (default: default)"
+    vars:
+      NS: '{{.NS | default "default"}}'
+    cmds:
+      - kubectl logs -n {{.NS}} -l app --all-containers --follow --tail=50
+
+  k8s-forward:
+    desc: "Port-forward all observability UIs and web service to localhost"
+    cmds:
+      - |
+        echo "Starting port-forwards..."
+        kubectl port-forward svc/web           9090:9090  -n default       &
+        kubectl port-forward svc/consul-ui     8500:80    -n consul        &
+        kubectl port-forward svc/grafana       3000:3000  -n observability &
+        kubectl port-forward svc/jaeger-query  16686:16686 -n observability &
+        kubectl port-forward svc/prometheus    9091:9090  -n observability &
+        echo ""
+        echo "Endpoints:"
+        echo "  Web service  http://localhost:9090        (fake-service entry point)"
+        echo "  Consul UI    http://localhost:8500"
+        echo "  Grafana      http://localhost:3000  (admin/admin)"
+        echo "  Jaeger UI    http://localhost:16686"
+        echo "  Prometheus   http://localhost:9091"
+        echo ""
+        echo "To stop: pkill -f 'kubectl port-forward'"
+
+  k8s-validate:
+    desc: "Check Consul config entries and fake-service health in k8s"
+    cmds:
+      - |
+        echo "==> fake-service pods"
+        kubectl get pods -n default -l 'app in (web,api,payments,currency,cache)' -o wide
+        echo ""
+        echo "==> Observability pods"
+        kubectl get pods -n observability -o wide
+        echo ""
+        echo "==> Consul registered services"
+        kubectl exec -n consul consul-server-0 -- consul catalog services 2>/dev/null || true
+        echo ""
+        echo "==> Consul service health"
+        kubectl exec -n consul consul-server-0 -- consul health service web 2>/dev/null || true
+
+  k8s-demo:
+    desc: "Run the interactive observability demo (requires running k8s stack)"
+    cmds:
+      - bash ../scripts/demo.sh
+
+  # ── Minikube tasks ────────────────────────────────────────────────────────
+
+  minikube-setup:
+    desc: "Bootstrap a minikube cluster with the full observability stack"
+    cmds:
+      - bash ../scripts/minikube-setup.sh
+
+  minikube-down:
+    desc: "Delete the minikube profile (consul-observability)"
+    vars:
+      PROFILE: '{{.MINIKUBE_PROFILE | default "consul-observability"}}'
+    cmds:
+      - minikube delete --profile {{.PROFILE}}

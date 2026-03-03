@@ -1,0 +1,17 @@
+# openshift/services/web.yaml
+# OpenShift Route for the web (fake-service entry point).
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: web
+  namespace: default
+spec:
+  to:
+    kind: Service
+    name: web
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

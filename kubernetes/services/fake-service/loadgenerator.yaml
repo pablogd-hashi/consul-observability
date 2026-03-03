@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgenerator
+  namespace: default
+  labels:
+    app: loadgenerator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgenerator
+  template:
+    metadata:
+      labels:
+        app: loadgenerator
+      annotations:
+        # Not part of the mesh — drives traffic through the API Gateway,
+        # which handles mTLS into the mesh on the loadgenerator's behalf.
+        consul.hashicorp.com/connect-inject: "false"
+    spec:
+      restartPolicy: Always
+      containers:
+        - name: loadgenerator
+          image: curlimages/curl:8.7.1
+          command:
+            - sh
+            - -c
+            - |
+              # Target the API Gateway ClusterIP inside the cluster.
+              # This drives the full path: API GW → web → api → [payments, cache] → currency → TGW → rates
+              TARGET="http://api-gateway.consul.svc.cluster.local:8080/"
+              echo "Waiting for API Gateway..."
+              until curl -sf --max-time 3 "$TARGET" > /dev/null 2>&1; do
+                sleep 5
+              done
+              echo "API Gateway reachable — starting load"
+              while true; do
+                curl -sf --max-time 5 "$TARGET" > /dev/null 2>&1 || true
+                curl -sf --max-time 5 "$TARGET" > /dev/null 2>&1 || true
+                curl -sf --max-time 5 "$TARGET" > /dev/null 2>&1 || true
+                sleep 2
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

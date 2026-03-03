@@ -1,0 +1,17 @@
+# openshift/services/api-gateway.yaml
+# OpenShift Route for the Consul API Gateway.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: api-gateway
+  namespace: consul
+spec:
+  to:
+    kind: Service
+    name: api-gateway
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

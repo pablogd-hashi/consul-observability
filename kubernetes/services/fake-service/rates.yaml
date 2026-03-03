@@ -1,0 +1,89 @@
+# kubernetes/services/fake-service/rates.yaml
+# External service — NOT in the Consul service mesh.
+# No consul.hashicorp.com/connect-inject annotation → no Envoy sidecar injected.
+# Traffic from currency (mesh) reaches this service via the Terminating Gateway.
+# The TerminatingGateway CRD (kubernetes/consul/gateway/terminating-gateway-config.yaml)
+# tells Consul's control plane to route currency → rates through the gateway.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rates
+  namespace: default
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rates
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rates
+  template:
+    metadata:
+      labels:
+        app: rates
+      # No connect-inject annotation — this service is outside the mesh.
+      # No prometheus annotations — no Envoy sidecar to scrape.
+    spec:
+      serviceAccountName: rates
+      containers:
+        - name: rates
+          image: nicholasjackson/fake-service:v0.26.2
+          ports:
+            - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          env:
+            - name: NAME
+              value: "rates"
+            - name: MESSAGE
+              value: "Rates response (external service)"
+            - name: LISTEN_ADDR
+              value: "0.0.0.0:9090"
+            - name: TRACING_ZIPKIN
+              value: "http://otel-collector.observability.svc.cluster.local:9411"
+            - name: LOG_FORMAT
+              value: "json"
+            - name: ERROR_RATE
+              value: "0"
+            - name: TIMING_50_PERCENTILE
+              value: "1ms"
+            - name: TIMING_90_PERCENTILE
+              value: "1ms"
+            - name: TIMING_99_PERCENTILE
+              value: "1ms"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rates
+  namespace: default
+  labels:
+    app: rates
+spec:
+  selector:
+    app: rates
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP

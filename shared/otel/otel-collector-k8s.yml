@@ -1,0 +1,177 @@
+# otel-collector-k8s.yml
+# OpenTelemetry Collector config for Kubernetes / OpenShift.
+#
+# Differences from the Docker variant (otel-collector-docker.yml):
+#   - No filelog receiver (Envoy access logs go to stdout in k8s; use OTel
+#     access log extension in Consul ProxyDefaults CRD instead)
+#   - Adds k8sattributes processor to enrich spans/logs with pod metadata
+#   - Adds hostmetrics receiver for node-level metrics (optional)
+#   - Same OTLP + Zipkin receivers, same Jaeger + Loki exporters
+
+receivers:
+  # App traces and logs (OTLP from instrumented services)
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+  # Proxy traces from Envoy sidecars (Zipkin format)
+  zipkin:
+    endpoint: "0.0.0.0:9411"
+
+  # Prometheus receiver — scrapes Consul agent and Envoy sidecar metrics.
+  # In k8s, Envoy metrics are exposed on each pod via the merged metrics port.
+  # Consul agent metrics are exposed on the Consul service.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: consul-agents
+          scrape_interval: 15s
+          metrics_path: /v1/agent/metrics
+          params:
+            format: [prometheus]
+          # Uses k8s service discovery to find all Consul pods
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names: [consul]
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_label_app]
+              regex: consul
+              action: keep
+            - target_label: __address__
+              replacement: consul-server.consul.svc.cluster.local:8500
+
+        - job_name: envoy-sidecars
+          scrape_interval: 15s
+          metrics_path: /stats/prometheus
+          # Scrape all pods with the prometheus scrape annotation
+          kubernetes_sd_configs:
+            - role: pod
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+              regex: "true"
+              action: keep
+            - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port]
+              target_label: __metrics_port__
+            - source_labels: [__address__, __metrics_port__]
+              regex: "([^:]+)(?::\\d+)?;(\\d+)"
+              replacement: "$1:$2"
+              target_label: __address__
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+  # Enrich all telemetry with Kubernetes pod/namespace/node metadata
+  k8sattributes:
+    auth_type: serviceAccount
+    passthrough: false
+    extract:
+      metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.node.name
+        - k8s.deployment.name
+      labels:
+        - tag_name: app
+          key: app
+          from: pod
+        - tag_name: version
+          key: version
+          from: pod
+    pod_association:
+      - sources:
+          - from: resource_attribute
+            name: k8s.pod.ip
+      - sources:
+          - from: connection
+
+  # Add mesh-level attributes (mirrors Docker variant)
+  attributes/mesh:
+    actions:
+      - key: mesh
+        value: consul
+        action: insert
+      - key: environment
+        value: kubernetes
+        action: insert
+
+  attributes/envoy:
+    actions:
+      - key: telemetry.source
+        value: envoy-proxy
+        action: insert
+
+  # Promote k8s resource attributes to Loki stream labels so LogQL queries like
+  # {namespace="default", app="nginx"} work. The loki exporter reads the
+  # loki.resource.labels hint attribute to know which resource attrs become labels.
+  resource/loki_labels:
+    attributes:
+      - action: insert
+        key: loki.resource.labels
+        value: "k8s.namespace.name, k8s.pod.name, app, k8s.deployment.name"
+
+exporters:
+  # Traces → Jaeger
+  otlp/jaeger:
+    endpoint: jaeger-collector.observability.svc.cluster.local:4317
+    tls:
+      insecure: true
+
+  # Logs → Loki
+  loki:
+    endpoint: http://loki.observability.svc.cluster.local:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: true
+      level: true
+
+  # Metrics → Prometheus remote write (or expose as scrape endpoint)
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: otelcol
+
+  debug:
+    verbosity: normal
+
+service:
+  telemetry:
+    metrics:
+      address: "0.0.0.0:8888"
+
+  pipelines:
+    # App traces (OTLP)
+    traces/app:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, attributes/mesh, batch]
+      exporters: [otlp/jaeger]
+
+    # Proxy traces (Zipkin from Envoy)
+    traces/proxy:
+      receivers: [zipkin]
+      processors: [memory_limiter, k8sattributes, attributes/mesh, attributes/envoy, batch]
+      exporters: [otlp/jaeger]
+
+    # Logs (OTLP from apps)
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, k8sattributes, resource/loki_labels, batch]
+      exporters: [loki, debug]
+
+    # Metrics (Prometheus scrape → re-expose for Prometheus to scrape OTel collector)
+    metrics:
+      receivers: [prometheus]
+      processors: [memory_limiter, k8sattributes, batch]
+      exporters: [prometheus]

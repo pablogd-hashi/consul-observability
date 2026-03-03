@@ -1,0 +1,358 @@
+# Taskfile.yml — root of rts-consul-observability
+# Usage: task <task-name>
+# Docs:  https://taskfile.dev
+#
+# Topology: API GW → web → api → [payments (→ currency → rates), cache]
+#
+# Quick start:
+#   Docker:     task docker:up     && task validate
+#   Podman:     task podman:up     && task validate
+#   K8s:        task k8s:up        && task validate
+#   OpenShift:  task openshift:up  && task validate
+
+version: "3"
+
+vars:
+  CLUSTER: consul-observability
+
+tasks:
+
+  # ── Default ────────────────────────────────────────────────────────────────
+  default:
+    desc: "List all available tasks"
+    silent: true
+    cmds:
+      - task --list
+
+  # ── Docker ─────────────────────────────────────────────────────────────────
+
+  docker:up:
+    desc: "Start the full Docker Compose stack (Consul + fake-service + observability)"
+    dir: docker
+    cmds:
+      - docker compose down --remove-orphans 2>/dev/null || true
+      - docker compose up -d
+      - |
+        echo ""
+        echo "✓ Stack is up. Run: task validate"
+        echo ""
+        echo "  Direct Envoy:  http://localhost:21000/"
+        echo "  API Gateway:   http://localhost:21001/"
+
+  docker:down:
+    desc: "Stop Docker Compose and remove orphaned containers (volumes are kept)"
+    dir: docker
+    cmds:
+      - echo "Stopping Docker Compose stack..."
+      - docker compose down --remove-orphans
+      - echo "✓ Done. Volumes are preserved. Run 'task docker:up' to restart."
+
+  docker:pull:
+    desc: "Pre-pull all Docker images"
+    dir: docker
+    cmds:
+      - docker compose pull
+
+  docker:logs:
+    desc: "Tail logs from all Docker Compose services (Ctrl-C to stop)"
+    dir: docker
+    cmds:
+      - docker compose logs -f
+
+  docker:ps:
+    desc: "Show Docker Compose service status"
+    dir: docker
+    cmds:
+      - docker compose ps
+
+  # ── Podman ─────────────────────────────────────────────────────────────────
+  # Uses podman/podman-compose.yml — shares configs from docker/ but adds
+  # :z SELinux relabeling on bind mounts for RHEL/Fedora compatibility.
+  # Prerequisites: podman >= 4.0, podman-compose  (pip install podman-compose)
+  #                macOS: run `podman machine init && podman machine start` first
+
+  podman:up:
+    desc: "Start the full Podman Compose stack (Consul + fake-service + observability)"
+    dir: podman
+    cmds:
+      - |
+        if [ ! -f .env ]; then
+          cp .env.example .env
+          echo "Created podman/.env from .env.example"
+        fi
+      - podman compose -f podman-compose.yml down --remove-orphans 2>/dev/null || true
+      - |
+        # Belt-and-suspenders: remove any stale named containers that compose down
+        # may have missed (e.g. containers orphaned from a prior interrupted run or
+        # a different compose project context).
+        for c in consul web api payments cache currency envoy prometheus loki otel-collector jaeger grafana loadgen; do
+          podman rm -f "$c" 2>/dev/null || true
+        done
+      - podman compose -f podman-compose.yml up -d
+      - |
+        echo ""
+        echo "✓ Podman stack is up."
+        echo ""
+        echo "  App (via Envoy)    http://localhost:21000/"
+        echo "  Consul UI          http://localhost:8500"
+        echo "  Grafana            http://localhost:3000  (admin/admin)"
+        echo "  Jaeger             http://localhost:16686"
+        echo "  Prometheus         http://localhost:9090"
+        echo ""
+        echo "Run: task validate   or   task demo"
+
+  podman:down:
+    desc: "Stop Podman Compose stack (keep volumes)"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml down
+
+  podman:clean:
+    desc: "Stop Podman Compose stack and remove all volumes"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml down -v
+
+  podman:pull:
+    desc: "Pre-pull all images with Podman"
+    cmds:
+      - podman pull hashicorp/consul:1.22.3
+      - podman pull nicholasjackson/fake-service:v0.26.2
+      - podman pull prom/prometheus:v2.52.0
+      - podman pull jaegertracing/all-in-one:1.58
+      - podman pull otel/opentelemetry-collector-contrib:0.103.0
+      - podman pull grafana/loki:3.1.0
+      - podman pull envoyproxy/envoy:v1.32.2
+      - podman pull grafana/grafana:10.4.3
+      - podman pull curlimages/curl:8.7.1
+
+  podman:ps:
+    desc: "Show Podman Compose service status"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml ps
+
+  podman:logs:
+    desc: "Tail logs from all Podman Compose services (Ctrl-C to stop)"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml logs -f
+
+  podman:restart:
+    desc: "Restart all Podman Compose services"
+    dir: podman
+    cmds:
+      - podman compose -f podman-compose.yml restart
+
+  # ── OpenShift (CRC) ───────────────────────────────────────────────────────
+  # Uses OpenShift Local (CRC) — shares K8s manifests from kubernetes/ but adds
+  # OpenShift Routes, SCCs, and Consul openshift.enabled Helm values.
+  # Prerequisites: crc >= 2.x (running), oc CLI, helm >= 3.x
+
+  openshift:up:
+    desc: "Bootstrap OpenShift Local (CRC) with Consul + observability + fake-service"
+    cmds:
+      - bash scripts/openshift-setup.sh
+
+  openshift:down:
+    desc: "Remove Consul, observability, and fake-service from OpenShift (keeps CRC running)"
+    cmds:
+      - |
+        echo "Removing fake-service deployments..."
+        for svc in web api payments cache currency rates loadgenerator; do
+          oc delete deployment "$svc" -n default 2>/dev/null || true
+          oc delete service "$svc" -n default 2>/dev/null || true
+        done
+        echo "Removing OpenShift Routes..."
+        oc delete -f openshift/services/ 2>/dev/null || true
+        oc delete -f openshift/consul/route.yaml 2>/dev/null || true
+        echo "Removing observability stack..."
+        oc delete -f kubernetes/observability/ 2>/dev/null || true
+        echo "Uninstalling Consul..."
+        helm uninstall consul -n consul 2>/dev/null || true
+        echo "Removing namespaces..."
+        oc delete namespace observability 2>/dev/null || true
+        echo "✓ Done. CRC cluster is still running. Run 'crc stop' to stop it."
+
+  openshift:status:
+    desc: "Show OpenShift pod and route status"
+    cmds:
+      - |
+        echo "── Routes ──"
+        oc get routes --all-namespaces 2>/dev/null || echo "  (no routes)"
+        echo ""
+        echo "── fake-service pods ──"
+        oc get pods -n default -l 'app in (web,api,payments,currency,cache,rates)' 2>/dev/null || echo "  (no pods)"
+        echo ""
+        echo "── Observability pods ──"
+        oc get pods -n observability 2>/dev/null || echo "  (no observability namespace)"
+        echo ""
+        echo "── Consul pods ──"
+        oc get pods -n consul 2>/dev/null || echo "  (no consul namespace)"
+
+  # ── Kubernetes ─────────────────────────────────────────────────────────────
+
+  k8s:up:
+    desc: "Bootstrap kind cluster with Consul + observability + fake-service"
+    cmds:
+      - bash scripts/kind-setup.sh
+
+  k8s:down:
+    desc: "Stop port-forwards and delete the kind cluster (full teardown)"
+    cmds:
+      - pkill -f 'kubectl port-forward' 2>/dev/null || true
+      - kind delete cluster --name {{.CLUSTER}}
+      - echo "✓ Cluster {{.CLUSTER}} deleted."
+
+  # ── Demo / Fault injection ─────────────────────────────────────────────────
+
+  demo:
+    desc: "Interactive fault-injection demo — auto-detects Docker vs Kubernetes"
+    cmds:
+      - bash scripts/demo.sh
+
+  # ── Validate ───────────────────────────────────────────────────────────────
+
+  validate:
+    desc: "Health check — auto-detects Docker / Podman / Kubernetes, prints status + URLs"
+    cmds:
+      - |
+        DOCKER_RUNNING=false
+        PODMAN_RUNNING=false
+        K8S_RUNNING=false
+        OCP_RUNNING=false
+
+        # Detect Docker
+        if docker compose -f docker/docker-compose.yml ps --status running \
+            --format json 2>/dev/null | grep -q '"web"'; then
+          DOCKER_RUNNING=true
+        fi
+
+        # Detect Podman (only if Docker not already running)
+        if ! $DOCKER_RUNNING; then
+          if podman compose -f podman/podman-compose.yml ps 2>/dev/null | grep -q "web"; then
+            PODMAN_RUNNING=true
+          fi
+        fi
+
+        # Detect OpenShift (check for routes — distinguishes from plain K8s)
+        if oc get routes -n observability 2>/dev/null | grep -q grafana; then
+          OCP_RUNNING=true
+        fi
+
+        # Detect K8s (only if not OpenShift)
+        if ! $OCP_RUNNING; then
+          if kubectl get pods -n default -l 'app in (web,api)' \
+              --no-headers 2>/dev/null | grep -q Running; then
+            K8S_RUNNING=true
+          fi
+        fi
+
+        if $DOCKER_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — Docker                  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  App (via Envoy)    http://localhost:21000/                   ║"
+          echo "║  API Gateway        http://localhost:21001/                   ║"
+          echo "║  Consul UI          http://localhost:8500                     ║"
+          echo "║  Grafana            http://localhost:3000  (admin/admin)      ║"
+          echo "║  Jaeger             http://localhost:16686                    ║"
+          echo "║  Prometheus         http://localhost:9090                     ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── Service status ──"
+          docker compose -f docker/docker-compose.yml ps --format "table {{.Name}}\t{{.Status}}"
+          echo ""
+          echo "── Quick checks ──"
+          curl -sf http://localhost:8500/v1/status/leader | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY"
+          curl -sf http://localhost:9090/-/ready          && echo "  Prometheus: READY"          || echo "  Prometheus: NOT READY"
+          curl -sf http://localhost:3100/ready            && echo "  Loki: READY"                || echo "  Loki: NOT READY"
+          curl -sf http://localhost:21000/ >/dev/null     && echo "  Web (Envoy): READY"         || echo "  Web: NOT READY"
+          curl -sf http://localhost:21001/ >/dev/null     && echo "  API Gateway: READY"         || echo "  API Gateway: NOT READY"
+
+        elif $PODMAN_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — Podman                  ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  App (via Envoy)    http://localhost:21000/                   ║"
+          echo "║  Consul UI          http://localhost:8500                     ║"
+          echo "║  Grafana            http://localhost:3000  (admin/admin)      ║"
+          echo "║  Jaeger             http://localhost:16686                    ║"
+          echo "║  Prometheus         http://localhost:9090                     ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── Service status ──"
+          podman compose -f podman/podman-compose.yml ps 2>/dev/null
+          echo ""
+          echo "── Quick checks ──"
+          curl -sf http://localhost:8500/v1/status/leader | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY"
+          curl -sf http://localhost:9090/-/ready          && echo "  Prometheus: READY"          || echo "  Prometheus: NOT READY"
+          curl -sf http://localhost:3100/ready            && echo "  Loki: READY"                || echo "  Loki: NOT READY"
+          curl -sf http://localhost:21000/ >/dev/null     && echo "  Web (Envoy): READY"         || echo "  Web: NOT READY"
+
+        elif $OCP_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — OpenShift               ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          GRAFANA_URL=$(oc get route grafana -n observability -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          JAEGER_URL=$(oc get route jaeger -n observability -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          PROM_URL=$(oc get route prometheus -n observability -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          CONSUL_URL=$(oc get route consul-ui -n consul -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          WEB_URL=$(oc get route web -n default -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          GW_URL=$(oc get route api-gateway -n consul -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
+          echo "║  Routes:                                                     ║"
+          [ -n "$GRAFANA_URL" ] && echo "  Grafana         https://$GRAFANA_URL  (admin/admin)"
+          [ -n "$JAEGER_URL" ]  && echo "  Jaeger          https://$JAEGER_URL"
+          [ -n "$PROM_URL" ]    && echo "  Prometheus      https://$PROM_URL"
+          [ -n "$CONSUL_URL" ]  && echo "  Consul UI       https://$CONSUL_URL"
+          [ -n "$WEB_URL" ]     && echo "  Web (app)       https://$WEB_URL"
+          [ -n "$GW_URL" ]      && echo "  API Gateway     https://$GW_URL"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── fake-service pods ──"
+          oc get pods -n default -l 'app in (web,api,payments,currency,cache,rates)' 2>/dev/null || echo "  (no pods)"
+          echo ""
+          echo "── Observability pods ──"
+          oc get pods -n observability 2>/dev/null || echo "  (no observability namespace)"
+          echo ""
+          echo "── Quick checks ──"
+          [ -n "$CONSUL_URL" ] && (curl -skf "https://$CONSUL_URL/v1/status/leader" | xargs -I{} echo "  Consul leader: {}" || echo "  Consul: NOT READY")
+          [ -n "$PROM_URL" ]   && (curl -skf "https://$PROM_URL/-/ready" && echo "  Prometheus: READY" || echo "  Prometheus: NOT READY")
+          [ -n "$WEB_URL" ]    && (curl -skf "https://$WEB_URL/" >/dev/null && echo "  Web (app): READY" || echo "  Web: NOT READY")
+
+        elif $K8S_RUNNING; then
+          echo "╔══════════════════════════════════════════════════════════════╗"
+          echo "║          Consul Observability Demo — Kubernetes              ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  App (web service)  http://localhost:9090  (port-forward)    ║"
+          echo "║  API Gateway        http://localhost:18080  (NodePort 30004) ║"
+          echo "║  Consul UI          http://localhost:8500  (port-forward)    ║"
+          echo "║  Grafana            http://localhost:3000  (admin/admin)     ║"
+          echo "║  Jaeger             http://localhost:16686 (port-forward)    ║"
+          echo "║  Prometheus         http://localhost:9091  (port-forward)    ║"
+          echo "╠══════════════════════════════════════════════════════════════╣"
+          echo "║  Port-forwards:                                              ║"
+          echo "║    kubectl port-forward svc/web          9090:9090 -n default       ║"
+          echo "║    kubectl port-forward svc/consul-ui    8500:80   -n consul        ║"
+          echo "║    kubectl port-forward svc/grafana      3000:3000 -n observability ║"
+          echo "║    kubectl port-forward svc/jaeger-query 16686:16686 -n observability ║"
+          echo "║    kubectl port-forward svc/prometheus   9091:9090 -n observability ║"
+          echo "╚══════════════════════════════════════════════════════════════╝"
+          echo ""
+          echo "── fake-service pods ──"
+          kubectl get pods -n default -l 'app in (web,api,payments,currency,cache,rates)' 2>/dev/null || echo "  (no pods found)"
+          echo ""
+          echo "── Observability pods ──"
+          kubectl get pods -n observability 2>/dev/null || echo "  (no observability namespace)"
+          echo ""
+          echo "── Consul services ──"
+          kubectl exec -n consul consul-server-0 -- consul catalog services 2>/dev/null || echo "  (consul not ready)"
+
+        else
+          echo "No running stack detected."
+          echo "  Docker:     task docker:up"
+          echo "  Podman:     task podman:up"
+          echo "  K8s:        task k8s:up"
+          echo "  OpenShift:  task openshift:up"
+          exit 1
+        fi

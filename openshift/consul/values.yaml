@@ -1,0 +1,36 @@
+# openshift/consul/values.yaml
+# OpenShift-specific Consul Helm overrides.
+# Extends kubernetes/consul/values.yaml — install with both files:
+#
+#   helm install consul hashicorp/consul -n consul --create-namespace \
+#     -f kubernetes/consul/values.yaml \
+#     -f openshift/consul/values.yaml
+
+global:
+  # OpenShift requires this flag to configure appropriate SCCs and security contexts
+  openshift:
+    enabled: true
+
+  # OCP image pull policy
+  imagePullPolicy: IfNotPresent
+
+  tls:
+    enabled: true
+    # CRC uses self-signed certs — disable strict verification
+    verify: false
+
+server:
+  # OCP storage class — adjust to match your cluster's default
+  # CRC uses crc-csi-hostpath-provisioner; AWS uses gp2/gp3; Azure uses managed-csi
+  storageClass: ""   # empty = use cluster default (works with CRC + cloud)
+
+connectInject:
+  apiGateway:
+    # On OpenShift, expose the API Gateway via a Route instead of NodePort
+    managedGatewayClass:
+      enabled: true
+      serviceType: ClusterIP
+
+ui:
+  service:
+    type: ClusterIP   # Expose via Route, not LoadBalancer

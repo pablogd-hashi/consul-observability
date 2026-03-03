@@ -1,0 +1,17 @@
+# openshift/services/prometheus.yaml
+# OpenShift Route for Prometheus UI.
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: prometheus
+  namespace: observability
+spec:
+  to:
+    kind: Service
+    name: prometheus
+  port:
+    targetPort: web
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

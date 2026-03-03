@@ -1,0 +1,83 @@
+# ServiceDefaults for Online Boutique — all in the `default` namespace.
+# Protocol declaration is required for Consul to emit HTTP/gRPC-level metrics
+# and for transparent proxy to correctly route traffic.
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: frontend
+  namespace: default
+spec:
+  protocol: http
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: cartservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: checkoutservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: currencyservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: emailservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: paymentservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: productcatalogservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: recommendationservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: shippingservice
+  namespace: default
+spec:
+  protocol: grpc
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceDefaults
+metadata:
+  name: adservice
+  namespace: default
+spec:
+  protocol: grpc

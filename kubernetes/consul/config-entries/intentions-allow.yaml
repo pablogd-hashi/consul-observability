@@ -1,0 +1,80 @@
+# kubernetes/consul/config-entries/intentions-allow.yaml
+# ServiceIntentions for the fake-service topology.
+#
+# With ACLs enabled, the default intention policy is deny-all.
+# Traffic flow:
+#   web → api → [payments, cache]   where   payments → currency → rates (via TGW)
+#
+# Apply BEFORE deploying services or all traffic will be blocked.
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: web
+  namespace: default
+spec:
+  destination:
+    name: web
+  sources:
+    - name: api-gateway
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: api
+  namespace: default
+spec:
+  destination:
+    name: api
+  sources:
+    - name: web
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: payments
+  namespace: default
+spec:
+  destination:
+    name: payments
+  sources:
+    - name: api
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: cache
+  namespace: default
+spec:
+  destination:
+    name: cache
+  sources:
+    - name: api
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: currency
+  namespace: default
+spec:
+  destination:
+    name: currency
+  sources:
+    - name: payments
+      action: allow
+---
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ServiceIntentions
+metadata:
+  name: rates
+  namespace: default
+spec:
+  destination:
+    name: rates
+  sources:
+    - name: currency
+      action: allow
