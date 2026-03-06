@@ -2,6 +2,8 @@
 
 Technical reference for metrics, logs, and distributed tracing in this Consul service mesh stack. Covers both the Docker Compose and Kubernetes deployments.
 
+> **Audience**: Anyone setting up observability for a Consul service mesh. No prior telemetry experience assumed.
+
 ---
 
 ## Table of Contents
@@ -21,77 +23,110 @@ Technical reference for metrics, logs, and distributed tracing in this Consul se
    - [Loki Label Strategy](#loki-label-strategy)
    - [Log-to-Trace Correlation](#log-to-trace-correlation)
 4. [Distributed Tracing](#distributed-tracing)
-   - [Envoy Zipkin Tracing](#envoy-zipkin-tracing)
-   - [Application OTLP Tracing](#application-otlp-tracing)
+   - [Who Generates Traces?](#who-generates-traces)
+   - [OTel Collector Trace Pipelines](#otel-collector-trace-pipelines)
+   - [Jaeger (Trace Storage)](#jaeger-trace-storage)
+   - [Service Dependency Map (from Traces)](#service-dependency-map-from-traces)
    - [Trace Context Propagation](#trace-context-propagation)
-   - [Sampling Configuration](#sampling-configuration)
 5. [OpenTelemetry Collector Pipeline](#opentelemetry-collector-pipeline)
-6. [Grafana Dashboards](#grafana-dashboards)
+6. [Envoy-Level vs Application-Level Tracing](#envoy-level-vs-application-level-tracing)
+7. [How Traffic Flows Through Envoy](#how-traffic-flows-through-envoy-and-what-gets-observed)
+   - [Inside the Mesh: Transparent Proxy](#inside-the-mesh-transparent-proxy)
+   - [Outside the Mesh: Terminating Gateway](#outside-the-mesh-terminating-gateway)
+   - [VMs vs Kubernetes vs OpenShift](#vms-vs-kubernetes-vs-openshift)
+   - [Configuration Side-by-Side: Helm vs HCL](#configuration-side-by-side-helm-vs-hcl)
+   - [How Envoy Decides What to Observe](#how-envoy-decides-what-to-observe)
+8. [Grafana Dashboards](#grafana-dashboards)
    - [1. Service Health](#1-service-health-service-healthjson)
    - [2. Consul Service Health](#2-consul-service-health-consul-healthjson)
    - [3. Service-to-Service Traffic](#3-service-to-service-traffic-service-to-servicejson)
    - [4. Envoy Access Logs](#4-envoy-access-logs-logsjson)
    - [5. Consul Gateways](#5-consul-gateways-gatewaysjson)
    - [Dashboard Quick Reference](#dashboard-quick-reference)
-7. [Troubleshooting](#troubleshooting)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
 ## Architecture
 
+There are three pillars of observability, each answering a different question:
+
+| Pillar | Question it answers | Tool | Storage |
+|--------|---------------------|------|---------|
+| **Metrics** | "How many requests? How fast? Any errors?" | Prometheus | Prometheus TSDB |
+| **Traces** | "What happened to this specific request as it crossed services?" | Jaeger | Badger (local disk) |
+| **Logs** | "What did each Envoy proxy actually see?" | Loki | Local filesystem |
+
+**Grafana** is the single UI that queries all three backends and presents unified dashboards.
+
+The **OTel Collector** sits in the middle as a data hub: it receives traces from applications, derives topology metrics (service graph) from those traces, and (on Docker) collects Envoy access logs.
+
+### End-to-End Data Flow
+
 ```
-                        CONSUL CONTROL PLANE
-                       ┌─────────────────────┐
-                       │  consul-server       │
-                       │  :8500 HTTP API      │
-                       │  :8501 HTTPS         │
-                       │  :8600 DNS           │
-                       │  /v1/agent/metrics   │◄── Prometheus scrape
-                       └──────────┬───────────┘
-                                  │ xDS (gRPC)
-                         ┌────────▼────────┐
-                         │  consul-        │  (per pod, Kubernetes)
-                         │  dataplane      │  (sidecar, Docker)
-                         │  Envoy proxy    │
-                         │  :20200/stats   │◄── Prometheus scrape
-                         └────────┬────────┘
-                   ┌──────────────┼──────────────┐
-                   │              │              │
-              access logs    Zipkin spans    passthrough
-              (stdout/file)  :9411           traffic
-                   │              │
-                   ▼              ▼
-         ┌──────────────────────────────────┐
-         │   OpenTelemetry Collector        │
-         │   - Receivers: OTLP, Zipkin,     │
-         │     Prometheus, filelog          │
-         │   - Processors: k8sattributes,   │
-         │     memory_limiter, batch,       │
-         │     resource/loki_labels         │
-         │   - Exporters: Jaeger, Loki,     │
-         │     Prometheus                   │
-         └────────┬──────────┬──────────────┘
-                  │          │          │
-            OTLP/gRPC      Push      Scrape
-                  │          │        endpoint
-                  ▼          ▼          ▼
-              Jaeger       Loki    Prometheus
-              :16686       :3100     :9090
-              (traces)     (logs)   (metrics)
-                  │          │          │
-                  └──────────┴──────────┘
-                             │
-                         Grafana :3000
-                    (datasources: all three)
+                              METRICS
+Consul Server :8500 ────────────────────────────────────────────► Prometheus
+                                                                    ▲
+Envoy Sidecars :20200/stats/prometheus ─────────────────────────────┘
+                                                                    ▲
+API Gateway :20200/stats/prometheus ────────────────────────────────┘
+                                                                    ▲
+Terminating Gateway :20200/stats/prometheus ────────────────────────┘
+                                                                    ▲
+OTel Collector :8889 (re-exports service graph metrics) ────────────┘
+
+                              TRACES
+fake-service ─── Zipkin spans ──► OTel Collector :9411
+                                       │
+                    ┌──────────────────┘
+                    │                   └──────────────────────┐
+                    ▼                                          ▼
+         Jaeger :4317 (OTLP gRPC)                   servicegraph connector
+         (trace storage + UI)                               │
+                                                            ▼
+                                              Prometheus exporter :8889
+                                         (traces_service_graph_request_total)
+                                                            │
+                                                            ▼
+                                                       Prometheus
+
+                              LOGS (Kubernetes)
+Envoy sidecar ── JSON access log ──► container stdout
+                                          │
+                                          ▼
+                            /var/log/pods/<pod>/<container>/*.log
+                                          │
+                                          ▼
+                                     Promtail DaemonSet
+                                          │
+                                          ▼
+                                     Loki :3100
+
+                              LOGS (Docker)
+Envoy sidecar ── JSON access log ──► shared volume (envoy-logs)
+                                          │
+                                          ▼
+                               OTel filelog receiver
+                                          │
+                                          ▼
+                                     Loki :3100
+
+                           VISUALIZATION
+                     ┌──── Prometheus ◄──── metrics queries
+                     │
+    Grafana ─────────┼──── Loki ◄────────── log queries
+                     │
+                     └──── Jaeger ◄──────── trace queries
 ```
 
 **Signal flow summary:**
 
-| Signal | Source | Collector path | Storage | Visualization |
-|--------|--------|---------------|---------|---------------|
-| Metrics | Consul `/v1/agent/metrics`, Envoy `:20200/stats/prometheus` | Prometheus receiver | Prometheus | Grafana |
-| Logs | Envoy access log (JSON, stdout) | Promtail (k8s) / filelog receiver (Docker) | Loki | Grafana |
-| Traces | App OTLP `:4317`, Envoy Zipkin `:9411` | OTel Collector | Jaeger | Grafana / Jaeger UI |
+| Signal | Source | Collection path | Storage | Visualization |
+|--------|--------|----------------|---------|---------------|
+| Metrics | Consul `/v1/agent/metrics`, Envoy `:20200/stats/prometheus` | Prometheus scrapes directly | Prometheus | Grafana |
+| Metrics | Service topology (derived from traces) | OTel servicegraph connector → Prometheus exporter `:8889` → Prometheus scrape | Prometheus | Grafana |
+| Logs | Envoy access log (JSON, stdout) | Promtail DaemonSet (K8s) / OTel filelog receiver (Docker) | Loki | Grafana |
+| Traces | fake-service `TRACING_ZIPKIN` env var → Zipkin `:9411` | OTel Collector → OTLP gRPC `:4317` | Jaeger | Grafana / Jaeger UI |
 
 ---
 
@@ -99,36 +134,37 @@ Technical reference for metrics, logs, and distributed tracing in this Consul se
 
 ### Enabling Metrics
 
-#### Kubernetes
+Metrics collection requires **three layers** of configuration that must all be present. If any one is missing, metrics will not be scraped.
 
-Metrics collection requires three separate configurations that must all be present:
-
-**1. Consul Helm values** (`kubernetes/consul/values.yaml`):
+#### Layer 1 — Consul Helm Values (`kubernetes/consul/values.yaml`)
 
 ```yaml
 global:
   metrics:
-    enabled: true
-    enableAgentMetrics: true
-    agentMetricsRetentionTime: "1m"
+    enabled: true                    # enables metrics across ALL proxies (sidecars + gateways)
+    enableAgentMetrics: true         # exposes Consul server agent metrics
+    agentMetricsRetentionTime: "10m"
+  tls:
+    httpsOnly: false                 # keeps HTTP :8500 open for Prometheus scraping
 
 connectInject:
   metrics:
-    defaultEnabled: true
+    defaultEnabled: true             # annotates injected pods for Prometheus scraping
     defaultEnableMerging: false      # CRITICAL — see note below
     defaultPrometheusScrapePort: 20200
+    defaultPrometheusScrapePath: "/stats/prometheus"
 ```
 
-> **`defaultEnableMerging`**: When `true`, consul-dataplane attempts to merge application `/metrics` with Envoy stats at port 20200. If the application does not expose a Prometheus `/metrics` endpoint, the merged output will contain error text (e.g. `"failed to fetch upstream metrics"`) which breaks Prometheus parsing with `strconv.ParseFloat` errors. Set to `false` unless your application explicitly exposes Prometheus metrics.
+> **Why `defaultEnableMerging: false`?** When `true`, consul-dataplane attempts to merge your application's own `/metrics` endpoint with Envoy stats at port 20200. If the application does not expose a Prometheus `/metrics` endpoint (as is the case with fake-service), the merged output contains error text (`"failed to fetch upstream metrics"`) which breaks Prometheus parsing with `strconv.ParseFloat` errors. Set to `false` unless your application explicitly exposes Prometheus metrics.
 
-The Helm chart annotates each injected pod with:
+The Helm chart automatically annotates each injected pod with:
 ```
 prometheus.io/scrape: "true"
 prometheus.io/port: "20200"
 prometheus.io/path: "/stats/prometheus"
 ```
 
-**2. ProxyDefaults CRD** (`kubernetes/consul/config-entries/proxy-defaults.yaml`):
+#### Layer 2 — ProxyDefaults CRD (`kubernetes/consul/config-entries/proxy-defaults.yaml`)
 
 ```yaml
 spec:
@@ -136,11 +172,23 @@ spec:
     envoy_prometheus_bind_addr: "0.0.0.0:20200"
 ```
 
-This tells Envoy to bind its admin stats endpoint on all interfaces at port 20200 instead of the default localhost-only admin port.
+This tells Envoy to bind its admin stats endpoint on all interfaces at port 20200. Without this line, Envoy does not expose metrics at all.
 
-**3. OTel Collector Prometheus receiver** (`shared/otel/otel-collector-k8s.yml`):
+> **Important**: `ProxyDefaults` with `name: global` applies to **every** Envoy proxy in the mesh — sidecars, API Gateway, Terminating Gateway, and Mesh Gateway. It is not sidecar-only. This is why a single setting enables metrics on all proxy types.
 
-The collector scrapes both Consul agents and Envoy sidecars using Kubernetes service discovery.
+#### Layer 3 — Pod Annotations (on each service Deployment)
+
+Each fake-service Deployment (e.g., `kubernetes/services/fake-service/web.yaml`) includes:
+
+```yaml
+annotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "20200"
+  prometheus.io/path: "/stats/prometheus"
+  consul.hashicorp.com/transparent-proxy-exclude-inbound-ports: "20200"
+```
+
+The last annotation is critical: transparent proxy intercepts all inbound traffic via iptables. Without excluding port `20200`, Prometheus scrape requests would be intercepted by the sidecar and fail.
 
 #### Docker Compose
 
@@ -168,6 +216,32 @@ And `docker/prometheus/prometheus.yml` directly scrapes:
   metrics_path: /stats/prometheus
   static_configs: [{targets: ['envoy-sidecar:20200']}]
 ```
+
+#### Gateway Metrics (API Gateway + Terminating Gateway)
+
+Both gateways are Envoy proxies managed by Consul. They receive the same `envoy_prometheus_bind_addr: "0.0.0.0:20200"` from `ProxyDefaults`, so they expose metrics on port `20200` just like sidecars.
+
+**Kubernetes** — a separate Prometheus scrape job `consul-gateways` discovers gateway pods in the `consul` namespace:
+
+```yaml
+- job_name: consul-gateways
+  kubernetes_sd_configs:
+    - role: pod
+      namespaces:
+        names: [consul]          # gateways run in the consul namespace, not default
+  relabel_configs:
+    # Keep only pods with prometheus.io/scrape=true
+    # AND whose "component" label matches api-gateway or terminating-gateway
+    - source_labels: [__meta_kubernetes_pod_label_component]
+      regex: "(api-gateway|terminating-gateway)"
+      action: keep
+```
+
+This is separate from the `envoy-sidecars` job because gateways run in the `consul` namespace (not `default`), and the `component` pod label distinguishes them from the Consul server pod.
+
+**Docker** — two separate static jobs:
+- `api-gateway` targeting `api-gateway:20201`
+- `terminating-gateway` targeting `terminating-gateway:20202`
 
 ---
 
@@ -605,7 +679,7 @@ These metrics show how Envoy receives and applies configuration updates pushed b
 
 ### OTel Servicegraph Metrics
 
-The OTel Collector's **servicegraph connector** consumes Zipkin spans emitted by Envoy sidecars, matches client/server span pairs, and derives metrics that describe the call graph between services. These are exported via Prometheus on port `:8889` and scraped by Prometheus under `job="servicegraph"`.
+The OTel Collector's **servicegraph connector** consumes Zipkin spans emitted by fake-service applications, matches client/server span pairs, and derives metrics that describe the call graph between services. These are exported via Prometheus on port `:8889` and scraped by Prometheus under `job="servicegraph"`.
 
 | Metric | Type | Labels | Description | Dashboard |
 |--------|------|--------|-------------|-----------|
@@ -898,20 +972,20 @@ Labels in Loki are indexed. Choosing too many high-cardinality labels causes per
 **Querying logs in Grafana / LogQL:**
 
 ```logql
-# All logs from nginx service
-{app="nginx"} | json
+# All logs from the web service sidecar
+{app="web", container="consul-dataplane"} | json
 
-# Error logs across all default namespace services
-{namespace="default"} |= "error" | json
+# Error logs across all default namespace sidecars
+{namespace="default", container="consul-dataplane"} | json | http_status_code >= 500
 
 # Trace-correlated logs (copy trace ID from Jaeger)
 {namespace="default"} | json | trace_id="4bf92f3577b34da6a3ce929d0e0e4736"
 
 # Envoy access logs for a specific upstream
-{app="nginx"} | json | upstream_cluster =~ ".*frontend.*"
+{app="web"} | json | upstream_cluster =~ ".*api.*"
 
 # Rate of 5xx responses in logs
-rate({app="nginx"} | json | response_code >= 500 [1m])
+rate({namespace="default", container="consul-dataplane"} | json | http_status_code >= 500 [1m])
 ```
 
 ---
@@ -938,168 +1012,125 @@ When viewing Envoy access logs in Grafana, any log line containing a `traceparen
 
 ## Distributed Tracing
 
-### Envoy Zipkin Tracing
+### What Are Traces?
 
-Every Envoy sidecar in the mesh is configured to emit Zipkin-format spans to the OTel Collector. Configuration lives in the `ProxyDefaults` CRD (Kubernetes) or `consul.hcl` (Docker).
+A **trace** is a record of a single request as it travels across multiple services. Each service creates a **span** — a timed segment that records the service name, operation, duration, and status. Spans are linked together by a shared **trace ID**, forming a tree:
 
-**How it works:**
-
-1. A request arrives at the Envoy inbound listener.
-2. Envoy checks for an existing `traceparent` header. If absent, it generates a new trace ID and span ID.
-3. Envoy adds the `traceparent` header to the upstream request, propagating the trace context.
-4. When the request completes, Envoy asynchronously flushes a Zipkin span to the `otel_zipkin` cluster.
-5. The OTel Collector receives the span, enriches it with Kubernetes metadata, and forwards it to Jaeger via OTLP/gRPC.
-
-**ProxyDefaults tracing config:**
-
-```yaml
-spec:
-  config:
-    envoy_tracing_json: |
-      {
-        "http": {
-          "name": "envoy.tracers.zipkin",
-          "typedConfig": {
-            "@type": "type.googleapis.com/envoy.config.trace.v3.ZipkinConfig",
-            "collector_cluster": "otel_zipkin",
-            "collector_endpoint_version": "HTTP_JSON",
-            "collector_endpoint": "/api/v2/spans",
-            "shared_span_context": true
-          }
-        }
-      }
-
-    envoy_extra_static_clusters_json: |
-      {
-        "name": "otel_zipkin",
-        "type": "STRICT_DNS",
-        "connect_timeout": "5s",
-        "load_assignment": {
-          "cluster_name": "otel_zipkin",
-          "endpoints": [{
-            "lb_endpoints": [{
-              "endpoint": {
-                "address": {
-                  "socket_address": {
-                    "address": "otel-collector.observability.svc.cluster.local",
-                    "port_value": 9411
-                  }
-                }
-              }
-            }]
-          }]
-        }
-      }
+```
+Trace ID: abc123
+├── web (300ms)
+│   └── api (250ms)
+│       ├── payments (100ms)
+│       │   └── currency (50ms)
+│       │       └── rates (20ms)     ← exits mesh via Terminating Gateway
+│       └── cache (30ms)
 ```
 
-**`shared_span_context: true`** causes Envoy to share the same span ID between the ingress and egress of a proxy hop (rather than creating a child span). This matches the Zipkin shared-span model.
+In Jaeger, you see this as a waterfall diagram. You can inspect each span to see which service was slow or returned an error.
 
-**Span attributes added by Envoy:**
+### Who Generates Traces?
 
-| Attribute | Example value |
-|-----------|---------------|
-| `http.method` | `GET` |
-| `http.url` | `http://frontend:3000/` |
-| `http.status_code` | `200` |
-| `upstream_cluster` | `frontend.default.dc1.internal...consul` |
-| `node_id` | `<pod-name>.default` |
-| `component` | `proxy` |
+In this demo, **the applications generate traces, not Envoy**.
 
----
-
-### Application OTLP Tracing
-
-Application services can send traces directly to the OTel Collector over OTLP. This produces application-level spans (function calls, DB queries, external HTTP calls) which can be correlated with Envoy proxy spans in the same trace.
-
-**Docker environment variables** (set in `docker-compose.yml`):
+Every fake-service instance (including `rates`, which is outside the mesh) has this environment variable:
 
 ```yaml
-environment:
-  - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-  - OTEL_SERVICE_NAME=example-app
-  - OTEL_TRACES_EXPORTER=otlp
-  - OTEL_PROPAGATORS=tracecontext,baggage
+- name: TRACING_ZIPKIN
+  value: "http://otel-collector.observability.svc.cluster.local:9411"
 ```
 
-**Kubernetes** (add to service Deployment spec):
+This tells fake-service to send Zipkin-format spans directly to the OTel Collector on port `9411` (the Zipkin receiver). The application creates spans for each incoming request and each outbound call, then sends them over HTTP.
+
+> **Why not use Envoy-level tracing?** See [Envoy-Level vs Application-Level Tracing](#envoy-level-vs-application-level-tracing) for a detailed comparison. The short answer: Consul CE does not expose a tracing sampling rate configuration knob. Envoy's default is `random_sampling={} = 0%`, which injects `x-b3-sampled: 0` into every request header. Any B3-aware application (including fake-service) sees that header and suppresses trace reporting entirely. Rather than fight this default, we let applications send their own traces.
+
+### OTel Collector Trace Pipelines
+
+The OTel Collector has three trace pipelines:
+
+```
+                            ┌── traces/proxy ────────► Jaeger
+Zipkin :9411 ──────────────┤
+(from fake-service)         └── traces/proxy_graph ──► servicegraph connector ──► Prometheus :8889
+
+OTLP :4317/:4318 ─────────── traces/app ─────────────► Jaeger + servicegraph
+(not used in this demo)
+```
+
+| Pipeline | Receivers | Key Processors | Exporters |
+|----------|-----------|----------------|-----------|
+| `traces/proxy` | `zipkin` | `transform/fix_client_spans`, `k8sattributes`, `attributes/mesh`, `attributes/envoy` | `otlp/jaeger` |
+| `traces/proxy_graph` | `zipkin` | `transform/fix_client_spans`, `filter/client_only` | `servicegraph` |
+| `traces/app` | `otlp` | `k8sattributes`, `attributes/mesh` | `otlp/jaeger`, `servicegraph` |
+
+**Key processors explained:**
+
+- **`transform/fix_client_spans`**: fake-service emits spans named `call_upstream` without a proper span kind. This processor sets `kind = SPAN_KIND_CLIENT` on those spans and extracts the target service name from the HTTP URL into a `peer.service` attribute. Without this, the servicegraph connector cannot determine caller/callee relationships.
+
+- **`filter/client_only`**: Drops all spans that are not `SPAN_KIND_CLIENT`. This is **only used in the `traces/proxy_graph` pipeline** and prevents a subtle bug: Zipkin uses a shared span ID model where both caller and callee share the same span ID. If the servicegraph connector receives both CLIENT and SERVER spans with the same ID, it can produce incorrect edges (shifted by one hop). Filtering to CLIENT-only spans avoids this.
+
+- **`k8sattributes`**: Enriches spans with Kubernetes metadata (pod name, namespace, deployment name).
+
+- **`attributes/mesh`**: Adds `mesh=consul` and `environment=kubernetes` labels.
+
+- **`attributes/envoy`**: Tags Zipkin-received spans with `telemetry.source=envoy-proxy`.
+
+### Jaeger (Trace Storage)
+
+Jaeger (`kubernetes/observability/jaeger.yaml`) runs in all-in-one mode:
+
+- **Collector**: accepts OTLP gRPC on port `4317` (from the OTel Collector's `otlp/jaeger` exporter)
+- **Storage**: Badger (local disk, `SPAN_STORAGE_TYPE=badger`)
+- **Query/UI**: port `16686`
+
+The OTel Collector exports to Jaeger using OTLP gRPC:
 
 ```yaml
-env:
-  - name: OTEL_EXPORTER_OTLP_ENDPOINT
-    value: "http://otel-collector.observability.svc.cluster.local:4317"
-  - name: OTEL_SERVICE_NAME
-    value: "frontend"
-  - name: OTEL_TRACES_EXPORTER
-    value: "otlp"
-  - name: OTEL_PROPAGATORS
-    value: "tracecontext,baggage"
+exporters:
+  otlp/jaeger:
+    endpoint: "jaeger-collector.observability.svc.cluster.local:4317"
+    tls:
+      insecure: true
 ```
 
-The HashiCups services (`frontend`, `public-api`, `product-api`, `payments`) do **not** have OTLP instrumented in their binaries by default. Only Envoy-level spans are available for these services in the current Kubernetes deployment.
+### Service Dependency Map (from Traces)
 
----
+The Service Dependency Map in Grafana shows which service calls which. These topology metrics are **derived from traces** by the OTel Collector's `servicegraph` connector.
+
+The connector counts span pairs (caller → callee) and emits a Prometheus metric:
+
+```
+traces_service_graph_request_total{client="web", server="api"} 42
+```
+
+The `servicegraph` connector config:
+
+```yaml
+connectors:
+  servicegraph:
+    latency_histogram_buckets: [1ms, 2ms, 6ms, 10ms, 100ms, 250ms, 500ms, 1000ms]
+    store:
+      ttl: 10s
+      max_items: 1000
+    cache_loop: 1s
+    virtual_node_peer_attributes: ["peer.service"]
+```
+
+The `virtual_node_peer_attributes: ["peer.service"]` setting is critical. It allows the connector to create edges from CLIENT spans alone, using the `peer.service` attribute as the target node name. Without this, the connector would only create edges when it finds matching CLIENT+SERVER span pairs, which can fail when spans arrive at different times.
+
+This metric is exposed on the OTel Collector's Prometheus exporter (port `8889`), which Prometheus scrapes via the `servicegraph` job.
 
 ### Trace Context Propagation
 
-This stack uses the **W3C Trace Context** standard (`traceparent` / `tracestate` headers), not the legacy B3 format.
-
-**`traceparent` header format:**
+fake-service uses the **Zipkin B3** propagation format (`x-b3-traceid`, `x-b3-spanid`, `x-b3-sampled` headers). When a request passes through the service chain (e.g., `web → api → payments → currency → rates`), each service propagates the trace context to downstream calls, preserving the trace ID.
 
 ```
-00-<trace-id-32hex>-<parent-span-id-16hex>-<flags-2hex>
-```
-
-Example:
-```
-00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
-  ^  ^                                ^                ^
-  |  trace ID (128-bit)               parent span ID   flags (01=sampled)
-  version (always 00)
-```
-
-Envoy reads and writes `traceparent`. When a service mesh request passes through multiple Envoy sidecars (e.g. nginx → frontend → public-api → product-api), each hop creates a child span with the trace ID preserved, enabling full end-to-end trace assembly in Jaeger.
-
-**Propagation through the HashiCups call chain:**
-
-```
-client → nginx:20200 → frontend:3000 → public-api:8080 → product-api:9090
-           │ Envoy span  │ Envoy span     │ Envoy span       │ Envoy span
-           └─────────────┴────────────────┴──────────────────┘
+client → API Gateway → web → api → payments → currency → TGW → rates
+                        │         │            │           │        │
+                        └─ span   └─ span      └─ span    └─ span  └─ span
                          same trace ID, parent-child span chain
 ```
 
----
-
-### Sampling Configuration
-
-**Default behavior:** Consul configures Envoy's HTTP Connection Manager (HCM) tracing block. When `envoy_tracing_json` is set in ProxyDefaults, the sampling rate is controlled by the HCM `random_sampling` field.
-
-**Consul 1.22.x known issue:** Consul 1.22.x sets `random_sampling: {}` (an empty `RuntimeFractionalPercent` proto) in the generated HCM config, which evaluates to **0% sampling**. This means zero spans are generated even though Zipkin is configured and the `otel_zipkin` cluster is reachable.
-
-**Diagnosis:**
-
-```bash
-# Get Envoy config dump from a running pod
-kubectl exec -n default <pod-name> -c consul-dataplane -- \
-  wget -qO- http://localhost:19000/config_dump
-
-# Look for tracing block — broken state shows:
-# "tracing": { "random_sampling": {} }
-
-# Confirm with stats
-kubectl exec -n default <pod-name> -c consul-dataplane -- \
-  wget -qO- http://localhost:19000/stats | grep "tracing\."
-# tracing.not_traceable: <N>   ← non-zero = 0% sampling
-# tracing.random_sampling: 0   ← never increments
-```
-
-**Workaround options:**
-
-1. **Upgrade Consul**: Fixed in later 1.22.x patch releases. Check Consul changelogs.
-
-2. **Override via `envoy_public_listener_json`** in ProxyDefaults: Provide a complete HCM JSON with `random_sampling` set explicitly. This is complex and version-sensitive.
-
-3. **App-level OTLP tracing**: Bypass Envoy for spans entirely by adding OTLP SDKs to each application. This produces richer application-level spans and is unaffected by the HCM sampling bug.
+The OTLP receiver on the OTel Collector also supports **W3C Trace Context** (`traceparent` / `tracestate` headers) for applications using OTLP SDKs, though this is not used in the current demo.
 
 ---
 
@@ -1165,6 +1196,368 @@ resource/loki_labels:
 ```
 
 **`batch`**: Buffers telemetry records and sends them in bulk to exporters. Reduces the number of HTTP/gRPC calls and improves throughput.
+
+---
+
+## Envoy-Level vs Application-Level Tracing
+
+There are two fundamentally different approaches to collecting traces in a Consul service mesh. This demo uses **application-level tracing**. Understanding both is essential when explaining the architecture to customers.
+
+### Approach A: Envoy-Level Tracing (Not Used in This Demo)
+
+Configure Envoy itself to generate and export trace spans. This is done entirely through `ProxyDefaults` (Kubernetes) or `proxy.config` blocks in service registration (VMs/HCL):
+
+**Kubernetes — ProxyDefaults CRD:**
+
+```yaml
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ProxyDefaults
+metadata:
+  name: global
+spec:
+  config:
+    envoy_tracing_json: |
+      {
+        "http": {
+          "name": "envoy.tracers.opentelemetry",
+          "typedConfig": {
+            "@type": "type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig",
+            "http_service": {
+              "http_uri": {
+                "uri": "http://otel-collector.observability.svc.cluster.local:4318/v1/traces",
+                "cluster": "opentelemetry-collector",
+                "timeout": "5s"
+              }
+            }
+          }
+        }
+      }
+    envoy_listener_tracing_json: |
+      {
+        "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager.Tracing",
+        "random_sampling": {
+          "value": 10
+        },
+        "spawn_upstream_span": true
+      }
+    envoy_extra_static_clusters_json: |
+      {
+        "name": "opentelemetry-collector",
+        "connect_timeout": "1s",
+        "type": "STRICT_DNS",
+        "lb_policy": "ROUND_ROBIN",
+        "load_assignment": {
+          "cluster_name": "opentelemetry-collector",
+          "endpoints": [{
+            "lb_endpoints": [{
+              "endpoint": {
+                "address": {
+                  "socket_address": {
+                    "address": "otel-collector.observability.svc.cluster.local",
+                    "port_value": 4318
+                  }
+                }
+              }
+            }]
+          }]
+        }
+      }
+```
+
+**VMs — HCL service registration (consul.hcl or service config file):**
+
+```hcl
+service {
+  name = "web"
+  port = 9090
+
+  connect {
+    sidecar_service {
+      proxy {
+        config {
+          envoy_tracing_json = <<-EOF
+            {
+              "http": {
+                "name": "envoy.tracers.opentelemetry",
+                "typedConfig": {
+                  "@type": "type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig",
+                  "http_service": {
+                    "http_uri": {
+                      "uri": "http://otel-collector:4318/v1/traces",
+                      "cluster": "opentelemetry-collector",
+                      "timeout": "5s"
+                    }
+                  }
+                }
+              }
+            }
+          EOF
+
+          envoy_listener_tracing_json = <<-EOF
+            {
+              "@type": "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager.Tracing",
+              "random_sampling": { "value": 10 }
+            }
+          EOF
+
+          envoy_extra_static_clusters_json = <<-EOF
+            {
+              "name": "opentelemetry-collector",
+              "connect_timeout": "1s",
+              "type": "STRICT_DNS",
+              "load_assignment": {
+                "cluster_name": "opentelemetry-collector",
+                "endpoints": [{
+                  "lb_endpoints": [{
+                    "endpoint": {
+                      "address": {
+                        "socket_address": {
+                          "address": "otel-collector",
+                          "port_value": 4318
+                        }
+                      }
+                    }
+                  }]
+                }]
+              }
+            }
+          EOF
+        }
+      }
+    }
+  }
+}
+```
+
+This requires three config blocks:
+- **`envoy_tracing_json`** — defines the tracing provider (OpenTelemetry or Zipkin) and where to send spans
+- **`envoy_listener_tracing_json`** — sets the sampling rate on the HTTP Connection Manager. The `random_sampling.value` field is a percentage (0–100). Setting `10` means 10% of requests generate a trace span.
+- **`envoy_extra_static_clusters_json`** — adds a static Envoy cluster so Envoy can reach the OTel Collector (the cluster name must match the one referenced in the tracing config)
+
+**Applies to gateways too**: despite a common misconception, `ProxyDefaults` with `name: global` applies to **all** Envoy proxies — sidecars, API Gateway, Terminating Gateway, and Mesh Gateway. They all receive the same bootstrap config. The equivalent on VMs applies to any `proxy.config` block passed through `consul connect envoy`. If you need different tracing config per gateway, use a `ServiceDefaults` config entry targeting the specific gateway service name.
+
+### Approach B: Application-Level Tracing (Used in This Demo)
+
+The applications themselves generate and send traces, bypassing Envoy's tracing entirely:
+
+**Kubernetes — Deployment env vars:**
+
+```yaml
+env:
+  - name: TRACING_ZIPKIN
+    value: "http://otel-collector.observability.svc.cluster.local:9411"
+```
+
+**Docker — docker-compose.yml:**
+
+```yaml
+environment:
+  TRACING_ZIPKIN: "http://otel-collector:9411"
+```
+
+**VMs — systemd unit or process env:**
+
+```bash
+TRACING_ZIPKIN="http://otel-collector:9411" ./fake-service
+```
+
+No `envoy_tracing_json`, no `envoy_listener_tracing_json`, no `envoy_extra_static_clusters_json` needed.
+
+### Comparison
+
+| Aspect | Envoy-Level (Approach A) | Application-Level (Approach B) |
+|--------|--------------------------|-------------------------------|
+| **Configuration** | Three JSON blocks in ProxyDefaults or HCL | One env var per service |
+| **Works with any app?** | Yes — traces every HTTP request passing through Envoy regardless of app support | No — requires the application to have tracing instrumentation |
+| **Span detail** | Infrastructure-level: method, path, status, duration | Application-level: can include business context, custom tags, function-level spans |
+| **Sampling control** | Via `random_sampling.value` in `envoy_listener_tracing_json` | Controlled by the application or its tracing library |
+| **Consul CE compatibility** | Requires explicit `random_sampling` config. Without it, Envoy defaults to 0% sampling and injects `x-b3-sampled: 0`, suppressing all traces | No interaction with Envoy sampling — apps send traces independently |
+| **Gateway tracing** | Gateways are traced automatically (they are Envoy proxies that receive ProxyDefaults) | Gateways are NOT traced (no application inside a gateway to generate spans) |
+| **VM support** | Same config in HCL `proxy.config {}` blocks | Same env var, no Consul config needed |
+
+### Why This Demo Uses Application-Level Tracing
+
+Consul CE (Community Edition) does not expose a `Tracing.SamplingPercent` knob in its Mesh config entry (it returns `"invalid config key"` when set). When you configure `envoy_tracing_json` without explicitly setting `random_sampling` in `envoy_listener_tracing_json`, Envoy's HTTP Connection Manager defaults to `random_sampling = {} = 0%`. This causes Envoy to inject the B3 header `x-b3-sampled: 0` into every request. Any B3-aware application (including fake-service) sees this header and suppresses trace reporting entirely.
+
+The result: zero traces, even though tracing is "configured."
+
+The fix would be to explicitly set `random_sampling` in `envoy_listener_tracing_json` (as shown in Approach A above). However, this demo deliberately avoids the Envoy tracing configuration to keep the setup simpler and to demonstrate that application-level tracing works independently of the mesh proxy layer.
+
+### Can You Use Both?
+
+Yes. In production, many teams use both:
+- **Envoy-level tracing** for infrastructure visibility on services that have no built-in tracing (legacy apps, third-party containers)
+- **Application-level tracing** for richer business-context spans on services you control
+
+The OTel Collector can merge spans from both sources into a single trace — they share the same trace ID via B3 or W3C `traceparent` header propagation.
+
+---
+
+## How Traffic Flows Through Envoy (and What Gets Observed)
+
+A common customer question: *"Does everything go through Envoy, even traffic to services outside the mesh?"*
+
+### Inside the Mesh: Transparent Proxy
+
+On Kubernetes (and OpenShift), Consul Connect injects an Envoy sidecar into every pod annotated with `consul.hashicorp.com/connect-inject: "true"`. It also configures **transparent proxy** — iptables rules that intercept all inbound and outbound TCP traffic from the pod and redirect it through Envoy.
+
+This means:
+- **Outbound**: When `currency` calls `http://rates:9090`, the request never goes directly to the `rates` pod. Instead, iptables redirects it to the local Envoy sidecar, which looks up `rates` in Consul's service catalog to decide how to route it.
+- **Inbound**: When a request arrives at the `web` pod, it first hits the Envoy sidecar's public listener, which enforces mTLS and service intentions (authorization) before forwarding to the application on `localhost:9090`.
+
+**Because all traffic passes through Envoy, all traffic is automatically observed**: metrics, access logs, and (if enabled) traces are generated for every request without any application changes.
+
+### Outside the Mesh: Terminating Gateway
+
+The `rates` service runs **outside the mesh** — it has no Envoy sidecar (`consul.hashicorp.com/connect-inject` is not set). So how does `currency` reach it?
+
+1. `currency`'s Envoy sidecar intercepts the outbound call to `rates:9090` (transparent proxy)
+2. Envoy looks up `rates` in Consul's service catalog and finds it registered as an external service
+3. The `TerminatingGateway` config entry lists `rates` as a service it handles
+4. Envoy routes the request through the **Terminating Gateway** (another Envoy proxy in the `consul` namespace)
+5. The Terminating Gateway forwards the request to `rates.default.svc.cluster.local:9090` — plain TCP, no mTLS
+
+**Observability implications:**
+- `currency`'s Envoy sidecar records metrics and access logs for the outbound call
+- The Terminating Gateway records metrics and access logs for the external call
+- `rates` itself has no sidecar, so there are no Envoy metrics or access logs on the `rates` side
+- However, `rates` **does send traces** (via `TRACING_ZIPKIN` env var) — this is application-level, not Envoy-level
+
+### VMs vs Kubernetes vs OpenShift
+
+The Envoy routing logic is the same across all platforms — Consul configures Envoy via xDS regardless of where it runs. The differences are in **how Envoy is deployed** and **how traffic interception works**:
+
+| Aspect | VMs (HCL) | Kubernetes (Helm) | OpenShift (Helm + OCP) |
+|--------|-----------|-------------------|------------------------|
+| **Sidecar deployment** | Manual: `consul connect envoy -sidecar-for <service>` as a systemd unit | Automatic: Consul Connect webhook injects `consul-dataplane` container into pods | Same as K8s (webhook injection) |
+| **Traffic interception** | Manual iptables or explicit upstream config in HCL | Automatic transparent proxy via Consul CNI or init container iptables | Same as K8s, but requires `anyuid` SCC for init container |
+| **Metrics enabling** | `envoy_prometheus_bind_addr` in service registration HCL | `envoy_prometheus_bind_addr` in `ProxyDefaults` CRD + Helm `global.metrics.enabled: true` | Same as K8s |
+| **Access logs** | `envoy_access_log_path` in service registration HCL or Consul config | `accessLogs.enabled: true` in `ProxyDefaults` CRD | Same as K8s |
+| **Prometheus scraping** | Static targets in `prometheus.yml` pointing to each VM's `:20200` | Kubernetes SD with pod annotations (`prometheus.io/scrape`) | Same as K8s |
+| **Log collection** | Promtail/Alloy agent on each VM reading Envoy log files | Promtail DaemonSet reading `/var/log/pods/` | Same as K8s, but promtail needs `privileged` SCC for CRI-O log permissions |
+| **Gateway metrics** | Static Prometheus targets for each gateway instance | Kubernetes SD in `consul` namespace, filtered by `component` label | Same as K8s |
+| **Tracing config** | `envoy_tracing_json` in per-service HCL `proxy.config {}` | `envoy_tracing_json` in `ProxyDefaults` CRD | Same as K8s |
+
+### Configuration Side-by-Side: Helm vs HCL
+
+**Enabling Envoy metrics:**
+
+```yaml
+# Kubernetes — ProxyDefaults CRD
+apiVersion: consul.hashicorp.com/v1alpha1
+kind: ProxyDefaults
+metadata:
+  name: global
+spec:
+  config:
+    envoy_prometheus_bind_addr: "0.0.0.0:20200"
+```
+
+```hcl
+# VMs — consul.hcl or service registration file
+service {
+  name = "web"
+  port = 9090
+
+  connect {
+    sidecar_service {
+      proxy {
+        config {
+          envoy_prometheus_bind_addr = "0.0.0.0:20200"
+        }
+      }
+    }
+  }
+}
+
+# Or globally via config entry (applied with consul config write):
+Kind = "proxy-defaults"
+Name = "global"
+
+Config {
+  envoy_prometheus_bind_addr = "0.0.0.0:20200"
+}
+```
+
+**Enabling access logs:**
+
+```yaml
+# Kubernetes — ProxyDefaults CRD
+spec:
+  accessLogs:
+    enabled: true
+    type: stdout
+    jsonFormat: '{"start_time":"%START_TIME%","method":"%REQ(:METHOD)%",...}'
+```
+
+```hcl
+# VMs — proxy-defaults config entry (HCL)
+Kind = "proxy-defaults"
+Name = "global"
+
+AccessLogs {
+  Enabled = true
+  Type    = "stdout"
+  JSONFormat = "{\"start_time\":\"%START_TIME%\",\"method\":\"%REQ(:METHOD)%\",...}"
+}
+```
+
+**Enabling Consul server metrics:**
+
+```yaml
+# Kubernetes — Helm values.yaml
+global:
+  metrics:
+    enabled: true
+    enableAgentMetrics: true
+    agentMetricsRetentionTime: "10m"
+```
+
+```hcl
+# VMs — consul.hcl (server config)
+telemetry {
+  prometheus_retention_time = "10m"
+}
+```
+
+**Registering an external service (for Terminating Gateway):**
+
+```yaml
+# Kubernetes — registered via Consul API (in setup script)
+curl -X PUT -H 'X-Consul-Token: <token>' \
+  http://localhost:8500/v1/catalog/register -d '{
+    "Node": "external-rates",
+    "Address": "rates.default.svc.cluster.local",
+    "Service": {
+      "Service": "rates",
+      "Port": 9090,
+      "Address": "rates.default.svc.cluster.local"
+    }
+  }'
+```
+
+```hcl
+# VMs — consul.hcl or external service registration file
+service {
+  name    = "rates"
+  port    = 9090
+  address = "10.0.1.50"  # VM IP where rates runs
+
+  # No connect {} block — this service is outside the mesh
+}
+```
+
+### How Envoy Decides What to Observe
+
+Envoy does not "decide" to route metrics or not. The observation happens at different layers:
+
+1. **Metrics** — Always collected if `envoy_prometheus_bind_addr` is set. Every request that passes through Envoy increments counters (`envoy_cluster_upstream_rq_total`, etc.) automatically. Prometheus must be configured to **scrape** the endpoint, but Envoy generates the data regardless.
+
+2. **Access logs** — Always written if `accessLogs.enabled: true` in ProxyDefaults. Every HTTP transaction produces one log line. There is no sampling — every request is logged.
+
+3. **Traces** — This is the only signal with sampling. If using Envoy-level tracing, the `random_sampling.value` in `envoy_listener_tracing_json` controls what percentage of requests generate spans. If using application-level tracing (as in this demo), Envoy is not involved in trace generation at all.
+
+The key insight: **metrics and access logs have no sampling — they capture 100% of traffic**. Only traces can be sampled to reduce overhead.
 
 ---
 
@@ -1529,9 +1922,11 @@ helm upgrade consul hashicorp/consul -n consul -f kubernetes/consul/values.yaml
 kubectl rollout restart deployment -n default
 ```
 
-### Envoy tracing: all `random_sampling` counters at 0
+### Envoy tracing: all `random_sampling` counters at 0 (Envoy-level tracing only)
 
-**Cause:** Consul 1.22.x bug — HCM tracing block contains `random_sampling: {}` (empty proto = 0%).
+> **Note**: This issue only applies if you are using Envoy-level tracing (Approach A). This demo uses application-level tracing and does not configure `envoy_tracing_json` at all.
+
+**Cause:** Consul CE does not expose a tracing sampling rate knob. When `envoy_tracing_json` is set without an explicit `random_sampling` in `envoy_listener_tracing_json`, the HCM tracing block contains `random_sampling: {}` (empty proto = 0%).
 
 **Verify:**
 
@@ -1539,7 +1934,7 @@ kubectl rollout restart deployment -n default
 CONSUL_TOKEN=$(kubectl get secret consul-bootstrap-acl-token -n consul \
   -o jsonpath='{.data.token}' | base64 -d)
 
-kubectl port-forward -n default deployment/nginx 19001:19000 &
+kubectl port-forward -n default deployment/web 19001:19000 &
 sleep 2
 
 # Stats check
@@ -1561,7 +1956,7 @@ PROMTAIL_POD=$(kubectl get pods -n observability -l app=promtail \
 
 # Check if log files exist at the expected path
 kubectl exec -n observability $PROMTAIL_POD -- \
-  sh -c "ls /var/log/pods/default_nginx-*/"
+  sh -c "ls /var/log/pods/default_web-*/"
 ```
 
 **Correct `__path__` relabeling** (uses all 4 metadata labels for explicit path construction):
