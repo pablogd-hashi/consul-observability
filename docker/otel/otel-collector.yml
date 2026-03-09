@@ -129,6 +129,17 @@ processors:
         key: loki.resource.labels
         value: "service.name, log.source"
 
+  # Tell the Loki exporter to send only the log body (the raw Envoy JSON line),
+  # not the default {"body":"...","attributes":{...}} wrapper.  Without this,
+  # Grafana queries like `| json | unwrap duration` can't find the duration
+  # field at the top level.  Setting loki.format=raw matches the K8s behaviour
+  # where Promtail sends raw JSON lines directly.
+  attributes/loki_body_only:
+    actions:
+      - key: loki.format
+        value: raw
+        action: upsert
+
 exporters:
   otlp/jaeger:
     endpoint: jaeger:4317
@@ -185,7 +196,7 @@ service:
 
     logs:
       receivers: [otlp, filelog]
-      processors: [memory_limiter, resource/envoy_loki_labels, batch]
+      processors: [memory_limiter, resource/envoy_loki_labels, attributes/loki_body_only, batch]
       exporters: [loki, debug]
 
     # Service graph metrics derived from traces — scraped by Prometheus on :8889

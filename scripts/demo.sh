@@ -119,10 +119,10 @@ docker_reset() {
   step "Resetting all fault injection ..."
   # Copy .env.example → .env for a guaranteed clean baseline (avoids stale values)
   cp "$DOCKER_DIR/.env.example" "$DOCKER_ENV"
-  step "Restarting fake-service containers ..."
+  step "Restarting fake-service containers + envoy (clears circuit breaker state) ..."
   docker compose -f "$DOCKER_DIR/docker-compose.yml" \
     --env-file "$DOCKER_ENV" up -d --force-recreate \
-    web api payments cache currency rates
+    web api payments cache currency rates envoy
   info "All services reset to 0% errors / 1ms latency"
 }
 
@@ -180,10 +180,10 @@ podman_inject_latency() {
 podman_reset() {
   step "Resetting all fault injection ..."
   cp "$PODMAN_DIR/.env.example" "$PODMAN_ENV"
-  step "Restarting fake-service containers ..."
+  step "Restarting fake-service containers + envoy (clears circuit breaker state) ..."
   podman compose -f "$PODMAN_DIR/podman-compose.yml" \
     --env-file "$PODMAN_ENV" up -d --force-recreate \
-    web api payments cache currency rates
+    web api payments cache currency rates envoy
   info "All services reset to 0% errors / 1ms latency"
 }
 
