@@ -8,42 +8,102 @@ Technical reference for metrics, logs, and distributed tracing in this Consul se
 
 ## Table of Contents
 
-1. [Architecture](#architecture)
-2. [Metrics](#metrics)
-   - [Enabling Metrics](#enabling-metrics)
-   - [Scrape Job Summary](#scrape-job-summary)
-   - [Consul Server Metrics](#consul-server-metrics)
-   - [Consul Dataplane Sidecar Metrics](#consul-dataplane-sidecar-metrics)
-   - [Envoy Sidecar Metrics](#envoy-sidecar-metrics)
-   - [OTel Servicegraph Metrics](#otel-servicegraph-metrics)
-   - [OTel Collector Self-Metrics](#otel-collector-self-metrics)
-3. [Logs](#logs)
-   - [Envoy Access Logs](#envoy-access-logs)
-   - [Kubernetes Pod Logs via Promtail](#kubernetes-pod-logs-via-promtail)
-   - [Loki Label Strategy](#loki-label-strategy)
-   - [Log-to-Trace Correlation](#log-to-trace-correlation)
-4. [Distributed Tracing](#distributed-tracing)
-   - [Who Generates Traces?](#who-generates-traces)
-   - [OTel Collector Trace Pipelines](#otel-collector-trace-pipelines)
-   - [Jaeger (Trace Storage)](#jaeger-trace-storage)
-   - [Service Dependency Map (from Traces)](#service-dependency-map-from-traces)
-   - [Trace Context Propagation](#trace-context-propagation)
-5. [OpenTelemetry Collector Pipeline](#opentelemetry-collector-pipeline)
-6. [Envoy-Level vs Application-Level Tracing](#envoy-level-vs-application-level-tracing)
-7. [How Traffic Flows Through Envoy](#how-traffic-flows-through-envoy-and-what-gets-observed)
-   - [Inside the Mesh: Transparent Proxy](#inside-the-mesh-transparent-proxy)
-   - [Outside the Mesh: Terminating Gateway](#outside-the-mesh-terminating-gateway)
-   - [VMs vs Kubernetes vs OpenShift](#vms-vs-kubernetes-vs-openshift)
-   - [Configuration Side-by-Side: Helm vs HCL](#configuration-side-by-side-helm-vs-hcl)
-   - [How Envoy Decides What to Observe](#how-envoy-decides-what-to-observe)
-8. [Grafana Dashboards](#grafana-dashboards)
-   - [1. Service Health](#1-service-health-service-healthjson)
-   - [2. Consul Service Health](#2-consul-service-health-consul-healthjson)
-   - [3. Service-to-Service Traffic](#3-service-to-service-traffic-service-to-servicejson)
-   - [4. Envoy Access Logs](#4-envoy-access-logs-logsjson)
-   - [5. Consul Gateways](#5-consul-gateways-gatewaysjson)
-   - [Dashboard Quick Reference](#dashboard-quick-reference)
-9. [Troubleshooting](#troubleshooting)
+- [Observability Reference](#observability-reference)
+  - [Table of Contents](#table-of-contents)
+  - [Architecture](#architecture)
+    - [End-to-End Data Flow](#end-to-end-data-flow)
+  - [Metrics](#metrics)
+    - [Enabling Metrics](#enabling-metrics)
+      - [Layer 1 — Consul Helm Values (`kubernetes/consul/values.yaml`)](#layer-1--consul-helm-values-kubernetesconsulvaluesyaml)
+      - [Layer 2 — ProxyDefaults CRD (`kubernetes/consul/config-entries/proxy-defaults.yaml`)](#layer-2--proxydefaults-crd-kubernetesconsulconfig-entriesproxy-defaultsyaml)
+      - [Layer 3 — Pod Annotations (on each service Deployment)](#layer-3--pod-annotations-on-each-service-deployment)
+      - [Docker Compose](#docker-compose)
+      - [Gateway Metrics (API Gateway + Terminating Gateway)](#gateway-metrics-api-gateway--terminating-gateway)
+    - [Scrape Job Summary](#scrape-job-summary)
+    - [Consul Server Metrics](#consul-server-metrics)
+      - [Cluster State (Point-in-Time)](#cluster-state-point-in-time)
+      - [Raft / Cluster Health](#raft--cluster-health)
+      - [Client API Activity](#client-api-activity)
+      - [Catalog \& Health](#catalog--health)
+      - [Membership / Gossip](#membership--gossip)
+      - [ACL](#acl)
+      - [RPC](#rpc)
+      - [Go Runtime](#go-runtime)
+    - [Consul Dataplane Sidecar Metrics](#consul-dataplane-sidecar-metrics)
+      - [Connectivity](#connectivity)
+      - [Runtime](#runtime)
+    - [Envoy Sidecar Metrics](#envoy-sidecar-metrics)
+      - [Proxy / Server Health](#proxy--server-health)
+      - [HTTP Downstream (Inbound)](#http-downstream-inbound)
+      - [Upstream Clusters (Outbound)](#upstream-clusters-outbound)
+      - [Listener (Connection Acceptance)](#listener-connection-acceptance)
+      - [mTLS / TLS](#mtls--tls)
+      - [Health Checks](#health-checks)
+      - [Circuit Breakers (Capacity-Based)](#circuit-breakers-capacity-based)
+      - [Outlier Detection (Success-Rate-Based)](#outlier-detection-success-rate-based)
+      - [xDS / Control Plane](#xds--control-plane)
+      - [Tracing](#tracing)
+    - [OTel Servicegraph Metrics](#otel-servicegraph-metrics)
+    - [OTel Collector Self-Metrics](#otel-collector-self-metrics)
+      - [Receivers (Ingestion)](#receivers-ingestion)
+      - [Processors](#processors)
+      - [Exporters (Delivery)](#exporters-delivery)
+      - [Process](#process)
+      - [Kubernetes Metadata Enrichment](#kubernetes-metadata-enrichment)
+  - [Logs](#logs)
+    - [Envoy Access Logs](#envoy-access-logs)
+    - [Kubernetes Pod Logs via Promtail](#kubernetes-pod-logs-via-promtail)
+    - [Loki Label Strategy](#loki-label-strategy)
+    - [Log-to-Trace Correlation](#log-to-trace-correlation)
+  - [Distributed Tracing](#distributed-tracing)
+    - [What Are Traces?](#what-are-traces)
+    - [Who Generates Traces?](#who-generates-traces)
+    - [OTel Collector Trace Pipelines](#otel-collector-trace-pipelines)
+    - [Jaeger (Trace Storage)](#jaeger-trace-storage)
+    - [Service Dependency Map (from Traces)](#service-dependency-map-from-traces)
+    - [Trace Context Propagation](#trace-context-propagation)
+  - [OpenTelemetry Collector Pipeline](#opentelemetry-collector-pipeline)
+    - [Kubernetes Pipeline](#kubernetes-pipeline)
+    - [Processor Details](#processor-details)
+  - [Envoy-Level vs Application-Level Tracing](#envoy-level-vs-application-level-tracing)
+    - [Approach A: Envoy-Level Tracing (Not Used in This Demo)](#approach-a-envoy-level-tracing-not-used-in-this-demo)
+    - [Approach B: Application-Level Tracing (Used in This Demo)](#approach-b-application-level-tracing-used-in-this-demo)
+    - [Comparison](#comparison)
+    - [Why This Demo Uses Application-Level Tracing](#why-this-demo-uses-application-level-tracing)
+    - [Can You Use Both?](#can-you-use-both)
+  - [How Traffic Flows Through Envoy (and What Gets Observed)](#how-traffic-flows-through-envoy-and-what-gets-observed)
+    - [Inside the Mesh: Transparent Proxy](#inside-the-mesh-transparent-proxy)
+    - [Outside the Mesh: Terminating Gateway](#outside-the-mesh-terminating-gateway)
+    - [VMs vs Kubernetes vs OpenShift](#vms-vs-kubernetes-vs-openshift)
+    - [Configuration Side-by-Side: Helm vs HCL](#configuration-side-by-side-helm-vs-hcl)
+    - [How Envoy Decides What to Observe](#how-envoy-decides-what-to-observe)
+  - [Grafana Dashboards](#grafana-dashboards)
+    - [1. Service Health (`service-health.json`)](#1-service-health-service-healthjson)
+      - [Row: Services Health](#row-services-health)
+      - [Row: Circuit Breaker](#row-circuit-breaker)
+    - [2. Consul Service Health (`consul-health.json`)](#2-consul-service-health-consul-healthjson)
+      - [Panels](#panels)
+    - [3. Service-to-Service Traffic (`service-to-service.json`)](#3-service-to-service-traffic-service-to-servicejson)
+      - [Top-row Stats (whole-mesh aggregates)](#top-row-stats-whole-mesh-aggregates)
+      - [Time Series Panels](#time-series-panels)
+      - [Distributed Traces — Service Call Chain](#distributed-traces--service-call-chain)
+      - [Service Dependency Map](#service-dependency-map)
+    - [4. Envoy Access Logs (`logs.json`)](#4-envoy-access-logs-logsjson)
+      - [Log Format](#log-format)
+      - [Panels](#panels-1)
+      - [Useful LogQL queries](#useful-logql-queries)
+    - [5. Consul Gateways (`gateways.json`)](#5-consul-gateways-gatewaysjson)
+      - [Row: API Gateway (north-south entry point)](#row-api-gateway-north-south-entry-point)
+      - [Row: Terminating Gateway (mesh-to-external)](#row-terminating-gateway-mesh-to-external)
+    - [Dashboard Quick Reference](#dashboard-quick-reference)
+    - [Accessing Dashboards](#accessing-dashboards)
+  - [Troubleshooting](#troubleshooting)
+    - [Prometheus targets show DOWN with `strconv.ParseFloat` error](#prometheus-targets-show-down-with-strconvparsefloat-error)
+    - [Envoy tracing: all `random_sampling` counters at 0 (Envoy-level tracing only)](#envoy-tracing-all-random_sampling-counters-at-0-envoy-level-tracing-only)
+    - [Loki: Promtail reports "Unable to find any logs to tail"](#loki-promtail-reports-unable-to-find-any-logs-to-tail)
+    - [OTel Collector crashes with `invalid keys: attributes_as_labels`](#otel-collector-crashes-with-invalid-keys-attributes_as_labels)
+    - [Grafana Jaeger panel: "Failed to upgrade legacy queries"](#grafana-jaeger-panel-failed-to-upgrade-legacy-queries)
+    - [No traces in Jaeger after generating traffic](#no-traces-in-jaeger-after-generating-traffic)
 
 ---
 
@@ -63,61 +123,7 @@ The **OTel Collector** sits in the middle as a data hub: it receives traces from
 
 ### End-to-End Data Flow
 
-```
-                              METRICS
-Consul Server :8500 ────────────────────────────────────────────► Prometheus
-                                                                    ▲
-Envoy Sidecars :20200/stats/prometheus ─────────────────────────────┘
-                                                                    ▲
-API Gateway :20200/stats/prometheus ────────────────────────────────┘
-                                                                    ▲
-Terminating Gateway :20200/stats/prometheus ────────────────────────┘
-                                                                    ▲
-OTel Collector :8889 (re-exports service graph metrics) ────────────┘
-
-                              TRACES
-fake-service ─── Zipkin spans ──► OTel Collector :9411
-                                       │
-                    ┌──────────────────┘
-                    │                   └──────────────────────┐
-                    ▼                                          ▼
-         Jaeger :4317 (OTLP gRPC)                   servicegraph connector
-         (trace storage + UI)                               │
-                                                            ▼
-                                              Prometheus exporter :8889
-                                         (traces_service_graph_request_total)
-                                                            │
-                                                            ▼
-                                                       Prometheus
-
-                              LOGS (Kubernetes)
-Envoy sidecar ── JSON access log ──► container stdout
-                                          │
-                                          ▼
-                            /var/log/pods/<pod>/<container>/*.log
-                                          │
-                                          ▼
-                                     Promtail DaemonSet
-                                          │
-                                          ▼
-                                     Loki :3100
-
-                              LOGS (Docker)
-Envoy sidecar ── JSON access log ──► shared volume (envoy-logs)
-                                          │
-                                          ▼
-                               OTel filelog receiver
-                                          │
-                                          ▼
-                                     Loki :3100
-
-                           VISUALIZATION
-                     ┌──── Prometheus ◄──── metrics queries
-                     │
-    Grafana ─────────┼──── Loki ◄────────── log queries
-                     │
-                     └──── Jaeger ◄──────── trace queries
-```
+![Flow](../images/consul_observability_stack.png)
 
 **Signal flow summary:**
 
