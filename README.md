@@ -30,16 +30,7 @@ The demo app is [fake-service](https://github.com/nicholasjackson/fake-service),
 
 ## Service topology
 
-```
-[client]
-   └─► API Gateway :21001 (Docker/Podman) / :18080 (K8s) / Route (OpenShift)
-         └─► web :9090
-               └─► api :9090
-                     ├─► payments :9090
-                     │     └─► currency :9090
-                     │           └─► Terminating Gateway → rates :9090 (external)
-                     └─► cache :9090
-```
+![Architecture](images/consul_observability_stack.png)
 
 All services send **Zipkin traces** to the OTel Collector → Jaeger.
 Envoy writes **JSON access logs** → OTel filelog receiver (Docker/Podman) / Promtail (K8s) → Loki.
