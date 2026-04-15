@@ -34,3 +34,8 @@ connectInject:
 ui:
   service:
     type: ClusterIP   # Expose via Route, not LoadBalancer
+  
+  # Grafana dashboard deep links (OpenShift Route URL)
+  # Note: Update the hostname after deploying Grafana to match your cluster's Route
+  dashboardURLTemplates:
+    service: "http://localhost:3000/d/service-mesh?orgId=1&var-service={{Service.Name}}&var-dc={{Datacenter}}"

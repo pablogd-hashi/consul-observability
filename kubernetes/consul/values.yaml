@@ -108,10 +108,16 @@ ui:
     type: ClusterIP   # Use NodePort or LoadBalancer for external access
   ingress:
     enabled: false    # Set true and configure host for production
+  
+  # Prometheus metrics integration
   metrics:
     enabled: true
     provider: "prometheus"
     baseURL: http://prometheus.observability.svc.cluster.local:9090
+  
+  # Grafana dashboard deep links
+  dashboardURLTemplates:
+    service: "http://localhost:3000/d/service-mesh?orgId=1&var-service={{Service.Name}}&var-dc={{Datacenter}}"
 
 # ── DNS ──────────────────────────────────────────────────────────────────────
 dns:

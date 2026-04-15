@@ -85,13 +85,15 @@ docker compose -f docker/docker-compose.yml ps
 |---------|-----|-------|
 | App (sidecar Envoy) | http://localhost:21000 | Direct sidecar proxy |
 | App (API Gateway) | http://localhost:21001 | North-south entry point |
-| Consul UI | http://localhost:8500 | Service health + topology |
+| Consul UI | http://localhost:8500 | Service health + topology + metrics integration |
 | Grafana | http://localhost:3000 | admin / admin |
 | Jaeger UI | http://localhost:16686 | Search service: `web` |
 | Prometheus | http://localhost:9090 | |
 | Envoy sidecar metrics | http://localhost:20200/stats/prometheus | Raw sidecar metrics |
 | API Gateway metrics | http://localhost:20201/stats/prometheus | Gateway raw metrics |
 | Loki | http://localhost:3100 | |
+
+**Consul UI Metrics Integration:** Click any service in the Consul UI → "Metrics" tab to view Prometheus data, or click "Dashboard" to jump directly to the Grafana service-to-service dashboard.
 
 ---
 
@@ -150,12 +152,14 @@ Identical to Docker Compose — same ports, same URLs:
 |---------|-----|-------|
 | App (sidecar Envoy) | http://localhost:21000 | Direct sidecar proxy |
 | App (API Gateway) | http://localhost:21001 | North-south entry point |
-| Consul UI | http://localhost:8500 | |
+| Consul UI | http://localhost:8500 | Service health + topology + metrics integration |
 | Grafana | http://localhost:3000 | admin / admin |
 | Jaeger UI | http://localhost:16686 | |
 | Prometheus | http://localhost:9090 | |
 | API Gateway metrics | http://localhost:20201/stats/prometheus | |
 | Loki | http://localhost:3100 | |
+
+**Consul UI Metrics Integration:** Click any service in the Consul UI → "Metrics" tab to view Prometheus data, or click "Dashboard" to jump directly to the Grafana service-to-service dashboard.
 
 ### Podman notes
 
@@ -218,10 +222,20 @@ kubectl port-forward svc/web          9090:9090  -n default       &
 |---------|-----|-------|
 | App (API Gateway) | http://localhost:18080 | NodePort 30004, no port-forward needed |
 | App (web direct) | http://localhost:9090 | Port-forward required |
-| Consul UI | http://localhost:8500 | Port-forward required |
-| Grafana | http://localhost:3000 | admin / admin |
+| Consul UI | http://localhost:8500 | Port-forward required, metrics integration enabled |
+| Grafana | http://localhost:3000 | admin / admin, port-forward required |
 | Jaeger | http://localhost:16686 | Port-forward required |
 | Prometheus | http://localhost:9091 | Port-forward required |
+
+**Port-forward commands:**
+```bash
+kubectl port-forward svc/consul-ui 8500:80 -n consul &
+kubectl port-forward svc/grafana 3000:3000 -n observability &
+kubectl port-forward svc/jaeger-query 16686:16686 -n observability &
+kubectl port-forward svc/prometheus 9091:9090 -n observability &
+```
+
+**Consul UI Metrics Integration:** Click any service in the Consul UI → "Metrics" tab to view Prometheus data, or click "Dashboard" to jump directly to the Grafana service-to-service dashboard.
 
 ### Tear down
 

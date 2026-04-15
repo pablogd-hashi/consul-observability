@@ -74,6 +74,8 @@ oc get routes --all-namespaces
 
 All URLs are HTTPS (self-signed CRC certificate — use `curl -k` or accept in browser).
 
+**Consul UI Metrics Integration:** The Consul UI is configured with Prometheus metrics integration. Click any service → "Metrics" tab to view real-time metrics, or click "Dashboard" to jump directly to the Grafana service-to-service dashboard for that service.
+
 ## Configuration files
 
 ### OpenShift-specific (this directory)

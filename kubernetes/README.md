@@ -53,10 +53,20 @@ kubectl port-forward svc/prometheus   9091:9090  -n observability &
 | Service | URL | Notes |
 |---------|-----|-------|
 | App (API Gateway) | http://localhost:18080 | NodePort, no port-forward |
-| Consul UI | http://localhost:8500 | Port-forward required |
-| Grafana | http://localhost:3000 | admin/admin |
+| Consul UI | http://localhost:8500 | Port-forward required, metrics integration enabled |
+| Grafana | http://localhost:3000 | admin/admin, port-forward required |
 | Jaeger | http://localhost:16686 | Port-forward required |
 | Prometheus | http://localhost:9091 | Port-forward required |
+
+**Port-forward commands:**
+```bash
+kubectl port-forward svc/consul-ui 8500:80 -n consul &
+kubectl port-forward svc/grafana 3000:3000 -n observability &
+kubectl port-forward svc/jaeger-query 16686:16686 -n observability &
+kubectl port-forward svc/prometheus 9091:9090 -n observability &
+```
+
+**Consul UI Metrics Integration:** The Consul UI is configured with Prometheus metrics integration. Click any service → "Metrics" tab to view real-time metrics, or click "Dashboard" to jump directly to the Grafana service-to-service dashboard for that service.
 
 ## Configuration files
 

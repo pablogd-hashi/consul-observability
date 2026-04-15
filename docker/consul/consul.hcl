@@ -10,9 +10,20 @@ bootstrap_expect = 1
 bind_addr   = "0.0.0.0"
 client_addr = "0.0.0.0"
 
-# Enable the UI
+# Enable the UI with metrics integration
 ui_config {
   enabled = true
+  
+  # Prometheus metrics integration
+  metrics_provider = "prometheus"
+  metrics_proxy {
+    base_url = "http://prometheus:9090"
+  }
+  
+  # Grafana dashboard deep links
+  dashboard_url_templates {
+    service = "http://localhost:3000/d/service-mesh?orgId=1&var-service={{Service.Name}}&var-dc={{Datacenter}}"
+  }
 }
 
 # Consul Connect (service mesh)

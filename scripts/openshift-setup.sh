@@ -203,12 +203,19 @@ echo "╔═══════════════════════�
 info "OpenShift setup complete!"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo ""
+echo "  Consul UI:"
+CONSUL_UI_URL=$(oc get route consul-ui -n "$CONSUL_NS" -o jsonpath='{.spec.host}' 2>/dev/null || echo "not-found")
+echo "    https://${CONSUL_UI_URL}"
+echo "    - View service mesh topology and health"
+echo "    - Click any service → 'Metrics' tab to see Prometheus data"
+echo "    - Click 'Dashboard' link to jump to Grafana service view"
+echo ""
 echo "  Routes:"
 
-for route in grafana jaeger prometheus web consul-ui api-gateway; do
+for route in grafana jaeger prometheus web api-gateway; do
   NS="$OBS_NS"
   [[ "$route" == "web" ]] && NS="$DEMO_NS"
-  [[ "$route" == "consul-ui" || "$route" == "api-gateway" ]] && NS="$CONSUL_NS"
+  [[ "$route" == "api-gateway" ]] && NS="$CONSUL_NS"
   URL=$(oc get route "$route" -n "$NS" -o jsonpath='{.spec.host}' 2>/dev/null || echo "")
   if [[ -n "$URL" ]]; then
     printf "    %-20s https://%s\n" "$route" "$URL"

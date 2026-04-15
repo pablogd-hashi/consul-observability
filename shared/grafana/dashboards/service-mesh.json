@@ -355,7 +355,29 @@
   "refresh": "30s",
   "schemaVersion": 38,
   "tags": ["consul", "envoy", "service-mesh"],
-  "templating": { "list": [] },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(envoy_cluster_upstream_rq_total, consul_service)",
+        "current": { "value": "$__all", "text": "All" },
+        "includeAll": true,
+        "multi": false,
+        "refresh": 1
+      },
+      {
+        "name": "dc",
+        "label": "Datacenter",
+        "type": "constant",
+        "query": "dc1",
+        "current": { "value": "dc1", "text": "dc1" },
+        "hide": 0
+      }
+    ]
+  },
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
   "timezone": "browser",

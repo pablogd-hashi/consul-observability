@@ -32,6 +32,8 @@ task demo            # interactive fault-injection demo
 | Jaeger | http://localhost:16686 |
 | Prometheus | http://localhost:9090 |
 
+**Consul UI Metrics Integration:** The Consul UI is configured with Prometheus metrics integration. Click any service → "Metrics" tab to view real-time metrics, or click "Dashboard" to jump directly to the Grafana service-to-service dashboard for that service.
+
 ## Configuration files
 
 | File | Purpose |
